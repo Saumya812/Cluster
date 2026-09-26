@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cluster</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Sora:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="loading-overlay">
+      <div id="loading-brand">CLUSTER</div>
+      <div id="loading-tagline">Subject globe → district → learn</div>
+      <div id="loading-bar-track"><div id="loading-bar-fill"></div></div>
+      <div id="loading-status">Preparing globe&hellip;</div>
+    </div>
+    <div id="globe-hint" hidden>
+      <p class="globe-title">Choose a subject</p>
+      <p class="globe-sub">Drag or ← → to spin · click a pin · <span class="accent">CS</span> opens districts</p>
+    </div>
+
+    <div id="district-picker" hidden>
+      <div class="picker-inner">
+        <button type="button" id="district-picker-back" class="picker-back">← Subject globe</button>
+        <p class="picker-eyebrow">Computer Science</p>
+        <h1 class="picker-title">Choose a city</h1>
+        <p class="picker-sub">Pick a city → climb its floating island roadmap, one level at a time.</p>
+        <div id="district-picker-grid" class="district-picker-grid"></div>
+      </div>
+    </div>
+
+    <button type="button" id="back-to-islands" class="back-to-islands" hidden>
+      ← Back to Islands
+    </button>
+
+    <div id="roadmap-hint" hidden>
+      <p class="roadmap-title">Island Roadmap</p>
+    </div>
+    <p id="roadmap-orbit-tip" hidden>Drag to orbit · click an island · Esc → cities</p>
+    <div id="island-tooltip" hidden></div>
+    <div id="roadmap-tutorial" hidden>
+      <div class="roadmap-tutorial-card">
+        <p class="roadmap-tutorial-title">Welcome to your learning journey</p>
+        <p class="roadmap-tutorial-body">Click <strong>Level 1</strong> to begin.</p>
+        <div class="roadmap-tutorial-arrow" aria-hidden="true">↓</div>
+        <button type="button" id="roadmap-tutorial-dismiss" class="roadmap-tutorial-dismiss">Got it</button>
+      </div>
+    </div>
+
+    <div id="blocker" style="display: none">
+      <div id="instructions">
+        <p class="brand-mark">CLUSTER</p>
+        <h1>Edu City · Board your plane</h1>
+        <p class="hint">
+          <strong>Click</strong> to take off (mouse look locks the cursor) ·
+          <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> fly ·
+          <kbd>Space</kbd> / <kbd>Shift</kbd> altitude ·
+          <kbd>E</kbd> open a building ·
+          <kbd>Esc</kbd> free your cursor
+        </p>
+        <p class="cta">Click here to take off</p>
+      </div>
+    </div>
+    <button type="button" id="resume-flight" class="resume-flight" hidden>
+      ▶ Resume flight <span>(cursor free until you click)</span>
+    </button>
+    <div id="hud">
+      <div id="hud-panel">
+        <div id="hud-title">ML CITY</div>
+        <div id="hud-stat-line"></div>
+        <div id="hud-location">Scanning skyline…</div>
+        <div id="hud-search-wrap">
+          <input
+            id="hud-search-input"
+            type="text"
+            placeholder="Fly to a topic building…"
+            autocomplete="off"
+          />
+          <div id="hud-search-results" hidden></div>
+        </div>
+        <div id="guide-panel" style="display: none">
+          <div id="guide-title">Tour guide</div>
+          <div id="guide-chips"></div>
+          <div id="guide-log"></div>
+          <div id="guide-compose">
+            <input id="guide-input" type="text" placeholder="Ask the guide…" autocomplete="off" />
+            <button type="button" id="guide-ask">Ask</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="crosshair" aria-hidden="true"></div>
+    <div id="near-prompt" hidden></div>
+    <aside id="building-side-panel" aria-hidden="true">
+      <div class="bsp-header">
+        <button type="button" id="bsp-close" aria-label="Close">×</button>
+        <p id="bsp-street"></p>
+        <h2 id="bsp-title"></h2>
+      </div>
+      <nav id="bsp-tabs" class="bsp-tabs" aria-label="Topic resources"></nav>
+      <div id="bsp-body" class="bsp-body"></div>
+      <div id="bsp-player-wrap" class="bsp-player-wrap" hidden>
+        <button type="button" id="bsp-back-list" class="bsp-back">← Back to list</button>
+        <div class="bsp-player-frame">
+          <iframe
+            id="bsp-player"
+            title="YouTube player"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowfullscreen
+          ></iframe>
+        </div>
+        <button type="button" id="bsp-open-yt" class="bsp-open-yt">Open on YouTube</button>
+      </div>
+    </aside>
+    <div id="topic-panel" hidden>
+      <div id="topic-card">
+        <button type="button" id="topic-close" aria-label="Close">×</button>
+        <p id="topic-street"></p>
+        <p id="topic-step"></p>
+        <h2 id="topic-title"></h2>
+        <img id="topic-media" alt="" hidden />
+        <p id="topic-body"></p>
+        <div id="topic-choices" hidden></div>
+        <p id="topic-result" hidden></p>
+        <button type="button" id="topic-next">Next</button>
+      </div>
+    </div>
+    <div id="compass-btn" role="button" tabindex="0" title="Open city map" aria-label="Open city map">
+      <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden="true">
+        <circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" stroke-width="3"/>
+        <circle cx="32" cy="32" r="3" fill="currentColor"/>
+        <path d="M32 8 L38 32 L32 28 L26 32 Z" fill="#ff5c5c"/>
+        <path d="M32 56 L26 32 L32 36 L38 32 Z" fill="#e8eef8"/>
+        <text x="32" y="18" text-anchor="middle" font-size="8" fill="#ff5c5c" font-family="Sora,sans-serif">N</text>
+      </svg>
+    </div>
+    <div id="map-wrap" hidden>
+      <div class="map-panel-head">
+        <div id="map-label">CITY MAP · click to fly</div>
+        <button type="button" id="map-close" aria-label="Close map">×</button>
+      </div>
+      <canvas id="minimap"></canvas>
+    </div>
+    <div id="push-toast-container"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

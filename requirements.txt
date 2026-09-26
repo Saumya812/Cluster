@@ -1,0 +1,9 @@
+requests
+python-dotenv
+fastapi
+uvicorn
+httpx
+websockets
+google-generativeai
+psycopg[binary]
+backboard-sdk

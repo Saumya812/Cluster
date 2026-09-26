@@ -1,0 +1,4 @@
+.env
+venv/
+city.db
+__pycache__/

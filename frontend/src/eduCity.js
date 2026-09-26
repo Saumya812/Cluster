@@ -7,11 +7,11 @@ import { buildAmusementPark } from './amusementPark.js'
 import { buildSunsetSky } from './islandRoadmap.js'
 
 const BASE_GROWTH_H = 14
-const PLAZA_RADIUS = 22
-const CELL = 16 // generous lot spacing for plane flight
-const FOOTPRINT = 7.5
-const ROAD_W = 18 // wide streets — readable from aerial / horizon
-const BLOCK_GAP = 4 // empty lots between blocks as road shoulders
+const PLAZA_RADIUS = 28
+const CELL = 24 // roomy but not barren
+const FOOTPRINT = 8
+const ROAD_W = 28 // wide streets — readable from aerial / horizon
+const BLOCK_GAP = 8 // empty lots between blocks as road shoulders
 const MIN_H = 14
 const MAX_H = 70
 
@@ -122,6 +122,317 @@ function addGrowthFence(root) {
   root.add(fenceGroup)
 }
 
+/**
+ * Trees, street lamps, and cars to fill the generous lot spacing.
+ * Returns { update(delta) }.
+ */
+function addStreetLife(root, {
+  streetZs,
+  avenueXs,
+  cityHalfX,
+  cityHalfZ,
+  plazaRadius,
+  occupied,
+  rng,
+  roadW,
+  cell,
+}) {
+  const treePositions = []
+  const lampPositions = []
+  const carLanes = []
+
+  function nearOccupied(x, z) {
+    const step = cell * 0.5
+    for (let dx = -step; dx <= step; dx += step) {
+      for (let dz = -step; dz <= step; dz += step) {
+        if (occupied.has(`${Math.round(x + dx)},${Math.round(z + dz)}`)) return true
+      }
+    }
+    const kx = Math.round(x / cell) * cell
+    const kz = Math.round(z / cell) * cell
+    if (occupied.has(`${Math.round(kx)},${Math.round(kz)}`)) return true
+    return false
+  }
+
+  // Sidewalk trees + lamps along every street (both curbs)
+  for (const z of streetZs) {
+    for (const side of [-1, 1]) {
+      const curbZ = z + side * (roadW * 0.5 + 2.2)
+      for (let x = -cityHalfX + cell; x <= cityHalfX - cell; x += cell * 0.85) {
+        if (Math.hypot(x, curbZ) < plazaRadius + 6) continue
+        if (nearOccupied(x, curbZ, cell * 0.38)) continue
+        if (rng() < 0.78) treePositions.push([x + (rng() - 0.5) * 2, curbZ + (rng() - 0.5) * 1.2])
+      }
+      for (let x = -cityHalfX + cell * 1.2; x <= cityHalfX - cell; x += cell * 1.6) {
+        if (Math.hypot(x, curbZ) < plazaRadius + 4) continue
+        lampPositions.push([x, curbZ])
+      }
+    }
+    // Driving lanes for cars on this street
+    carLanes.push({
+      horizontal: true,
+      fixed: z - roadW * 0.22,
+      min: -cityHalfX + 8,
+      max: cityHalfX - 8,
+      dir: 1,
+    })
+    carLanes.push({
+      horizontal: true,
+      fixed: z + roadW * 0.22,
+      min: -cityHalfX + 8,
+      max: cityHalfX - 8,
+      dir: -1,
+    })
+  }
+
+  // Trees filling the big gaps between streets / avenues
+  for (let z = -cityHalfZ; z <= cityHalfZ; z += cell * 0.55) {
+    for (let x = -cityHalfX; x <= cityHalfX; x += cell * 0.55) {
+      if (Math.hypot(x, z) < plazaRadius + 10) continue
+      let onRoad = false
+      for (const sz of streetZs) {
+        if (Math.abs(z - sz) < roadW * 0.55) onRoad = true
+      }
+      for (const ax of avenueXs) {
+        if (Math.abs(x - ax) < roadW * 0.55) onRoad = true
+      }
+      if (onRoad) continue
+      if (nearOccupied(x, z)) continue
+      if (rng() > 0.35) continue
+      treePositions.push([x + (rng() - 0.5) * 2.5, z + (rng() - 0.5) * 2.5])
+    }
+  }
+
+  // Avenue lamps + cars
+  for (const ax of avenueXs) {
+    for (const side of [-1, 1]) {
+      const curbX = ax + side * (roadW * 0.5 + 2.2)
+      for (let z = -cityHalfZ + cell; z <= cityHalfZ - cell; z += cell * 1.5) {
+        if (Math.hypot(curbX, z) < plazaRadius + 4) continue
+        lampPositions.push([curbX, z])
+        if (rng() < 0.5) treePositions.push([curbX + side * 2.5, z + (rng() - 0.5) * 2])
+      }
+    }
+    carLanes.push({
+      horizontal: false,
+      fixed: ax - roadW * 0.22,
+      min: -cityHalfZ + 8,
+      max: cityHalfZ - 8,
+      dir: 1,
+    })
+    carLanes.push({
+      horizontal: false,
+      fixed: ax + roadW * 0.22,
+      min: -cityHalfZ + 8,
+      max: cityHalfZ - 8,
+      dir: -1,
+    })
+  }
+
+  // --- Instanced trees (larger so they read from flight altitude) ---
+  const trunkGeo = new THREE.CylinderGeometry(0.35, 0.48, 3.2, 6)
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1e, roughness: 1 })
+  const coneGeo = new THREE.ConeGeometry(2.4, 5.2, 7)
+  const roundGeo = new THREE.IcosahedronGeometry(2.6, 0)
+  const foliageColors = [0x1f4d2b, 0x2c5f34, 0x255a3f, 0x3a6b2e, 0x1a5c38]
+  const coneIdx = []
+  const roundIdx = []
+  treePositions.forEach((_, i) => (rng() < 0.55 ? coneIdx : roundIdx).push(i))
+
+  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treePositions.length)
+  const coneMesh = new THREE.InstancedMesh(
+    coneGeo,
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
+    Math.max(coneIdx.length, 1),
+  )
+  const roundMesh = new THREE.InstancedMesh(
+    roundGeo,
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
+    Math.max(roundIdx.length, 1),
+  )
+  coneMesh.count = coneIdx.length
+  roundMesh.count = roundIdx.length
+
+  const dummy = new THREE.Object3D()
+  const tmpColor = new THREE.Color()
+  treePositions.forEach(([x, z], i) => {
+    const scale = 1.15 + rng() * 0.85
+    dummy.position.set(x, 1.6 * scale, z)
+    dummy.scale.set(scale, scale, scale)
+    dummy.rotation.y = rng() * Math.PI * 2
+    dummy.updateMatrix()
+    trunkMesh.setMatrixAt(i, dummy.matrix)
+  })
+  coneIdx.forEach((i, j) => {
+    const [x, z] = treePositions[i]
+    const scale = 1.15 + rng() * 0.85
+    dummy.position.set(x, 4.2 * scale, z)
+    dummy.scale.set(scale, scale, scale)
+    dummy.rotation.y = rng() * Math.PI * 2
+    dummy.updateMatrix()
+    coneMesh.setMatrixAt(j, dummy.matrix)
+    coneMesh.setColorAt(j, tmpColor.set(foliageColors[Math.floor(rng() * foliageColors.length)]))
+  })
+  roundIdx.forEach((i, j) => {
+    const [x, z] = treePositions[i]
+    const scale = 1.15 + rng() * 0.85
+    dummy.position.set(x, 3.6 * scale, z)
+    dummy.scale.set(scale, scale, scale)
+    dummy.rotation.y = rng() * Math.PI * 2
+    dummy.updateMatrix()
+    roundMesh.setMatrixAt(j, dummy.matrix)
+    roundMesh.setColorAt(j, tmpColor.set(foliageColors[Math.floor(rng() * foliageColors.length)]))
+  })
+  trunkMesh.instanceMatrix.needsUpdate = true
+  coneMesh.instanceMatrix.needsUpdate = true
+  roundMesh.instanceMatrix.needsUpdate = true
+  if (coneMesh.instanceColor) coneMesh.instanceColor.needsUpdate = true
+  if (roundMesh.instanceColor) roundMesh.instanceColor.needsUpdate = true
+  if (treePositions.length) root.add(trunkMesh, coneMesh, roundMesh)
+
+  // --- Street lamps (tall pole + arm + warm bulb) ---
+  const poleGeo = new THREE.CylinderGeometry(0.14, 0.2, 9, 6)
+  const armGeo = new THREE.BoxGeometry(2.4, 0.14, 0.14)
+  const bulbGeo = new THREE.SphereGeometry(0.48, 8, 8)
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x1c1f28, roughness: 0.7, metalness: 0.4 })
+  const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffd08a })
+  const poleMesh = new THREE.InstancedMesh(poleGeo, poleMat, Math.max(lampPositions.length, 1))
+  const armMesh = new THREE.InstancedMesh(armGeo, poleMat, Math.max(lampPositions.length, 1))
+  const bulbMesh = new THREE.InstancedMesh(bulbGeo, bulbMat, Math.max(lampPositions.length, 1))
+  poleMesh.count = lampPositions.length
+  armMesh.count = lampPositions.length
+  bulbMesh.count = lampPositions.length
+  lampPositions.forEach(([x, z], i) => {
+    let yaw = 0
+    let nearest = Infinity
+    for (const sz of streetZs) {
+      const d = Math.abs(z - sz)
+      if (d < nearest) {
+        nearest = d
+        yaw = z > sz ? Math.PI : 0
+      }
+    }
+    for (const ax of avenueXs) {
+      const d = Math.abs(x - ax)
+      if (d < nearest) {
+        nearest = d
+        yaw = x > ax ? -Math.PI / 2 : Math.PI / 2
+      }
+    }
+    dummy.position.set(x, 4.5, z)
+    dummy.scale.set(1, 1, 1)
+    dummy.rotation.set(0, yaw, 0)
+    dummy.updateMatrix()
+    poleMesh.setMatrixAt(i, dummy.matrix)
+
+    dummy.position.set(x + Math.sin(yaw) * 1.0, 8.7, z + Math.cos(yaw) * 1.0)
+    dummy.rotation.set(0, yaw, 0)
+    dummy.updateMatrix()
+    armMesh.setMatrixAt(i, dummy.matrix)
+
+    dummy.position.set(x + Math.sin(yaw) * 2.0, 8.4, z + Math.cos(yaw) * 2.0)
+    dummy.rotation.set(0, 0, 0)
+    dummy.scale.set(1, 1, 1)
+    dummy.updateMatrix()
+    bulbMesh.setMatrixAt(i, dummy.matrix)
+  })
+  if (lampPositions.length) {
+    poleMesh.instanceMatrix.needsUpdate = true
+    armMesh.instanceMatrix.needsUpdate = true
+    bulbMesh.instanceMatrix.needsUpdate = true
+    root.add(poleMesh, armMesh, bulbMesh)
+  }
+
+  // --- Cars (oversized so they read from flight height) ---
+  const CAR_COUNT = Math.min(36, Math.max(12, carLanes.length * 4))
+  const chassisGeo = new THREE.BoxGeometry(2.6, 0.8, 5.2)
+  const cabinGeo = new THREE.BoxGeometry(2.0, 0.75, 2.6)
+  const wheelGeo = new THREE.CylinderGeometry(0.48, 0.48, 0.32, 8)
+  const chassisMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.45 })
+  const cabinMat = new THREE.MeshStandardMaterial({ color: 0x14171f, roughness: 0.3, metalness: 0.5 })
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x0c0c0e, roughness: 0.85 })
+  const chassisMesh = new THREE.InstancedMesh(chassisGeo, chassisMat, CAR_COUNT)
+  const cabinMesh = new THREE.InstancedMesh(cabinGeo, cabinMat, CAR_COUNT)
+  const wheelMesh = new THREE.InstancedMesh(wheelGeo, wheelMat, CAR_COUNT * 4)
+  const carColors = [0xff6b4a, 0x3de7ff, 0xf0b429, 0x7ec850, 0x5b7cfa, 0xe8eef8, 0xff4d8d]
+  const cars = []
+
+  for (let i = 0; i < CAR_COUNT; i++) {
+    const lane = carLanes[i % carLanes.length]
+    const t = rng()
+    const along = lane.min + t * (lane.max - lane.min)
+    const speed = 12 + rng() * 18
+    const color = new THREE.Color(carColors[Math.floor(rng() * carColors.length)])
+    cars.push({ lane, along, speed, color, dir: lane.dir })
+    chassisMesh.setColorAt(i, color)
+  }
+
+  function placeCar(i, x, z, yaw) {
+    dummy.position.set(x, 0.75, z)
+    dummy.rotation.set(0, yaw, 0)
+    dummy.scale.set(1, 1, 1)
+    dummy.updateMatrix()
+    chassisMesh.setMatrixAt(i, dummy.matrix)
+
+    dummy.position.set(x, 1.45, z)
+    dummy.updateMatrix()
+    cabinMesh.setMatrixAt(i, dummy.matrix)
+
+    const cos = Math.cos(yaw)
+    const sin = Math.sin(yaw)
+    const corners = [
+      [1.05, 1.55],
+      [-1.05, 1.55],
+      [1.05, -1.55],
+      [-1.05, -1.55],
+    ]
+    corners.forEach(([lx, lz], w) => {
+      const wx = x + lx * cos + lz * sin
+      const wz = z - lx * sin + lz * cos
+      dummy.position.set(wx, 0.45, wz)
+      dummy.rotation.set(Math.PI / 2, yaw, 0)
+      dummy.updateMatrix()
+      wheelMesh.setMatrixAt(i * 4 + w, dummy.matrix)
+    })
+  }
+
+  function syncCars() {
+    cars.forEach((car, i) => {
+      const yaw = car.lane.horizontal
+        ? car.dir > 0
+          ? Math.PI / 2
+          : -Math.PI / 2
+        : car.dir > 0
+          ? 0
+          : Math.PI
+      const x = car.lane.horizontal ? car.along : car.lane.fixed
+      const z = car.lane.horizontal ? car.lane.fixed : car.along
+      placeCar(i, x, z, yaw)
+    })
+    chassisMesh.instanceMatrix.needsUpdate = true
+    cabinMesh.instanceMatrix.needsUpdate = true
+    wheelMesh.instanceMatrix.needsUpdate = true
+    if (chassisMesh.instanceColor) chassisMesh.instanceColor.needsUpdate = true
+  }
+  syncCars()
+  root.add(chassisMesh, cabinMesh, wheelMesh)
+
+  console.log(
+    `[edu city] street life: ${treePositions.length} trees · ${lampPositions.length} lamps · ${CAR_COUNT} cars`,
+  )
+
+  return {
+    update(delta) {
+      for (const car of cars) {
+        car.along += car.dir * car.speed * delta
+        if (car.along > car.lane.max) car.along = car.lane.min
+        if (car.along < car.lane.min) car.along = car.lane.max
+      }
+      syncCars()
+    },
+  }
+}
+
 /** Floating rocky platform + waterfall skirts. Returns { waterMats, bounds }. */
 function addFloatingPlatform(root, halfX, halfZ) {
   const padX = halfX + 28
@@ -220,9 +531,9 @@ function addFloatingPlatform(root, halfX, halfZ) {
       minX: -padX + 4,
       maxX: padX - 4,
       minZ: -padZ + 4,
-      maxZ: padZ - 4,
+      maxZ: padZ + 80,
       minY: 4,
-      maxY: 80,
+      maxY: 220,
     },
   }
 }
@@ -282,10 +593,10 @@ export function buildEduCity(scene, opts) {
   const buildingsById = new Map()
   const clickables = []
   const progressById = new Map(progress.map((p) => [p.building_id, p]))
-  const rng = mulberry32(hashStringToSeed(`edu-city-${cityId}-v4`))
+  const rng = mulberry32(hashStringToSeed(`edu-city-${cityId}-v5-spacious`))
 
   const streetCount = Math.max(streetNames.length, 1)
-  const streetSpacing = CELL * 5.2
+  const streetSpacing = CELL * 4.0
   const streetZs = streetNames.map((_, i) => (i - (streetCount - 1) / 2) * streetSpacing)
 
   const approxPerStreet = Math.max(1, Math.ceil((topics.length || 20) / streetCount))
@@ -312,6 +623,14 @@ export function buildEduCity(scene, opts) {
     ground.rotation.x = -Math.PI / 2
     ground.position.y = -0.05
     root.add(ground)
+    flightBounds = {
+      minX: -cityHalfX - 20,
+      maxX: cityHalfX + 40,
+      minZ: -cityHalfZ - 20,
+      maxZ: cityHalfZ + 100,
+      minY: 4,
+      maxY: 220,
+    }
   }
 
   const plaza = new THREE.Mesh(
@@ -389,11 +708,11 @@ export function buildEduCity(scene, opts) {
     root.add(lane)
 
     const streetLabel = makeTextSprite(streetName, `#${color.getHexString()}`, {
-      scaleX: 22,
-      scaleY: 4.2,
-      fontSize: 44,
+      scaleX: 36,
+      scaleY: 7,
+      fontSize: 56,
     })
-    streetLabel.position.set(-cityHalfX + 14, 18, z)
+    streetLabel.position.set(-cityHalfX + 18, 26, z)
     root.add(streetLabel)
 
     const streetTopics = byStreet.get(streetName) || []
@@ -437,11 +756,11 @@ export function buildEduCity(scene, opts) {
       occupied.add(lotKey(px, topicRowZ))
 
       const nameSprite = makeTextSprite(topic.name, '#e8eef8', {
-        scaleX: 12,
-        scaleY: 2.6,
-        fontSize: 28,
+        scaleX: 22,
+        scaleY: 4.6,
+        fontSize: 40,
       })
-      nameSprite.position.set(px, height + 4, topicRowZ)
+      nameSprite.position.set(px, height + 6, topicRowZ)
       nameSprite.visible = false
       root.add(nameSprite)
 
@@ -474,10 +793,10 @@ export function buildEduCity(scene, opts) {
       })
     })
 
-    // Filler blocks on both sides — dense but with clear road gaps
+    // Filler blocks on both sides — denser rows so lots don't look barren
     for (const side of [-1, 1]) {
-      for (let row = 1; row <= 2; row++) {
-        const rowZ = z + side * (ROAD_W * 0.5 + CELL * (0.65 + (row - 1) * 1.05))
+      for (let row = 1; row <= 3; row++) {
+        const rowZ = z + side * (ROAD_W * 0.5 + CELL * (0.55 + (row - 1) * 0.95))
         for (let i = -lotsPerSide; i <= lotsPerSide; i++) {
           if (Math.abs(i) <= BLOCK_GAP * 0.15 && Math.abs(rowZ) < PLAZA_RADIUS) continue
           const x = i * CELL
@@ -488,6 +807,8 @@ export function buildEduCity(scene, opts) {
           if (onAve) continue
           if (Math.hypot(x, rowZ) < PLAZA_RADIUS + 8) continue
           if (occupied.has(lotKey(x, rowZ))) continue
+          // Skip every ~5th lot so trees can sit between buildings
+          if (Math.abs(i) % 5 === 2) continue
           const height = MIN_H + rng() * (MAX_H - MIN_H)
           fillers.push({
             x,
@@ -498,23 +819,6 @@ export function buildEduCity(scene, opts) {
           occupied.add(lotKey(x, rowZ))
         }
       }
-    }
-
-    for (let i = -lotsPerSide; i <= lotsPerSide; i += 2) {
-      const x = i * CELL
-      if (Math.hypot(x, z) < PLAZA_RADIUS) continue
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.12, 0.14, 5, 6),
-        new THREE.MeshStandardMaterial({ color: 0x1c1f28 }),
-      )
-      pole.position.set(x, 2.5, z + ROAD_W * 0.42)
-      root.add(pole)
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.32, 8, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffc878 }),
-      )
-      bulb.position.set(x, 5.2, z + ROAD_W * 0.42)
-      root.add(bulb)
     }
   })
 
@@ -548,20 +852,95 @@ export function buildEduCity(scene, opts) {
   root.add(growthTower)
 
   const growthLabel = makeTextSprite('GROWTH TOWER', accent, {
-    scaleX: 16,
-    scaleY: 3.2,
-    fontSize: 40,
+    scaleX: 24,
+    scaleY: 5,
+    fontSize: 52,
   })
-  growthLabel.position.set(0, stats.height + 6, 0)
+  growthLabel.position.set(0, stats.height + 8, 0)
   root.add(growthLabel)
 
   const cityBanner = makeTextSprite(cityLabel.toUpperCase(), accent, {
-    scaleX: 28,
-    scaleY: 5,
-    fontSize: 48,
+    scaleX: 48,
+    scaleY: 9,
+    fontSize: 64,
   })
-  cityBanner.position.set(0, 28, cityHalfZ + 8)
+  const titleZ = cityHalfZ + 18
+  cityBanner.position.set(0, 42, titleZ)
   root.add(cityBanner)
+
+  // Welcome gate under the title so the entrance reads clearly
+  const gateMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(accent),
+    emissive: new THREE.Color(accent),
+    emissiveIntensity: 0.85,
+    roughness: 0.35,
+    metalness: 0.4,
+  })
+  for (const gx of [-18, 18]) {
+    const pillar = new THREE.Mesh(new THREE.BoxGeometry(2.2, 22, 2.2), gateMat)
+    pillar.position.set(gx, 11, titleZ - 6)
+    root.add(pillar)
+  }
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(40, 2.4, 2.4), gateMat)
+  lintel.position.set(0, 23, titleZ - 6)
+  root.add(lintel)
+
+  // Entry boulevard + landscaping visible from the title spawn
+  const entryRoad = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROAD_W * 1.15, 70),
+    new THREE.MeshStandardMaterial({ color: 0x14161f, roughness: 0.95 }),
+  )
+  entryRoad.rotation.x = -Math.PI / 2
+  entryRoad.position.set(0, 0.02, titleZ - 28)
+  root.add(entryRoad)
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 8; i++) {
+      const tz = titleZ - 8 - i * 7
+      const tx = side * (ROAD_W * 0.55 + 4)
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.4, 0.55, 3.4, 6),
+        new THREE.MeshStandardMaterial({ color: 0x3a2a1e, roughness: 1 }),
+      )
+      trunk.position.set(tx, 1.7, tz)
+      root.add(trunk)
+      const crown = new THREE.Mesh(
+        new THREE.ConeGeometry(2.8, 5.5, 7),
+        new THREE.MeshStandardMaterial({ color: 0x2c5f34, roughness: 0.9 }),
+      )
+      crown.position.set(tx, 5.2, tz)
+      root.add(crown)
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.16, 0.22, 9, 6),
+        new THREE.MeshStandardMaterial({ color: 0x1c1f28, metalness: 0.4 }),
+      )
+      pole.position.set(tx + side * 3, 4.5, tz + 3)
+      root.add(pole)
+      const bulb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.55, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffd08a }),
+      )
+      bulb.position.set(tx + side * 1.2, 8.6, tz + 3)
+      root.add(bulb)
+    }
+  }
+
+  const streetLife = addStreetLife(root, {
+    streetZs,
+    avenueXs,
+    cityHalfX,
+    cityHalfZ,
+    plazaRadius: PLAZA_RADIUS,
+    occupied,
+    rng,
+    roadW: ROAD_W,
+    cell: CELL,
+  })
+
+  // Start outside the city looking at the title gate — not at the Growth Tower.
+  const spawnPose = {
+    position: new THREE.Vector3(0, 38, titleZ + 95),
+    lookAt: new THREE.Vector3(0, 28, titleZ - 2),
+  }
 
   let park = null
   if (includePark) {
@@ -613,10 +992,10 @@ export function buildEduCity(scene, opts) {
 
   function updateApproachLabels(cameraPos) {
     let nearest = null
-    let nearestDist = 28
+    let nearestDist = 42
     for (const [, entry] of buildingsById) {
       const d = Math.hypot(cameraPos.x - entry.x, cameraPos.z - entry.z)
-      entry.label.visible = d < 36
+      entry.label.visible = d < 55
       if (d < nearestDist) {
         nearestDist = d
         nearest = { ...entry, dist: d, id: entry.building.id }
@@ -674,6 +1053,7 @@ export function buildEduCity(scene, opts) {
     cityLabel,
     amusementPark: park,
     flightBounds,
+    spawnPose,
     applyProgress(list) {
       progressById.clear()
       for (const row of list) progressById.set(row.building_id, row)
@@ -683,6 +1063,7 @@ export function buildEduCity(scene, opts) {
     updateApproachLabels,
     update(time, delta) {
       park?.update(time, delta)
+      streetLife?.update(delta)
       if (waterfallFx?.waterMats) {
         for (const mat of waterfallFx.waterMats) {
           if (mat.map) {

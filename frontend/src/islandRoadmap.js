@@ -6,6 +6,8 @@ import { cloneKenneyProp, placeOnSurface } from './kenneyAssets.js'
 import {
   cloneIslandModel,
   darkenIslandMaterials,
+  createInstancedIslandBodies,
+  getIslandPlacementMetrics,
 } from './fantasyIslandModel.js'
 
 const ISLAND_GAP_Y = 42
@@ -73,22 +75,22 @@ function desaturateHex(hex, amount = 0.45) {
 /** Clean white text on a dark pill — no colored borders. */
 function makeLabel(text, { scaleX = 14, scaleY = 2.6, fontSize = 30 } = {}) {
   const canvas = document.createElement('canvas')
-  canvas.width = 640
-  canvas.height = 120
+  canvas.width = 1024
+  canvas.height = 192
   const ctx = canvas.getContext('2d')
-  ctx.clearRect(0, 0, 640, 120)
+  ctx.clearRect(0, 0, 1024, 192)
 
-  ctx.font = `600 ${fontSize}px Sora, system-ui, sans-serif`
+  ctx.font = `700 ${fontSize}px Sora, system-ui, sans-serif`
   const metrics = ctx.measureText(text)
-  const padX = 28
-  const padY = 14
-  const tw = Math.min(metrics.width + padX * 2, 600)
+  const padX = 36
+  const padY = 18
+  const tw = Math.min(metrics.width + padX * 2, 980)
   const th = fontSize + padY * 2
-  const rx = (640 - tw) / 2
-  const ry = (120 - th) / 2
+  const rx = (1024 - tw) / 2
+  const ry = (192 - th) / 2
   const r = th / 2
 
-  ctx.fillStyle = 'rgba(12, 14, 22, 0.78)'
+  ctx.fillStyle = 'rgba(12, 14, 22, 0.88)'
   ctx.beginPath()
   ctx.moveTo(rx + r, ry)
   ctx.arcTo(rx + tw, ry, rx + tw, ry + th, r)
@@ -101,7 +103,7 @@ function makeLabel(text, { scaleX = 14, scaleY = 2.6, fontSize = 30 } = {}) {
   ctx.fillStyle = '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(text, 320, 60)
+  ctx.fillText(text, 512, 96)
 
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
@@ -262,7 +264,7 @@ function decorateWithKenney(parent, topR, surfaceY, locked, rng, assets, { trees
 }
 
 /**
- * Place a cloned GLB island mesh into `group`, scaled and grounded.
+ * Place a cloned GLB island mesh into `group` (fallback when instancing is off).
  * @returns {{ topR: number, surfaceY: number } | null}
  */
 function addGlbIslandBody(group, islandTemplate, locked, rng) {
@@ -275,9 +277,6 @@ function addGlbIslandBody(group, islandTemplate, locked, rng) {
   model.updateMatrixWorld(true)
 
   const box = new THREE.Box3().setFromObject(model)
-  const size = new THREE.Vector3()
-  box.getSize(size)
-  // Sit the grassy top near SURFACE_Y so props/bridges keep prior relative heights.
   model.position.y += SURFACE_Y - box.max.y
   model.updateMatrixWorld(true)
 
@@ -369,24 +368,30 @@ function buildProceduralIslandBody(group, locked, rng, shape, topR) {
   return { topR, surfaceY: SURFACE_Y }
 }
 
-function buildFantasyIsland(level, theme, state, index, assets = null, islandTemplate = null) {
+function buildFantasyIsland(
+  level,
+  theme,
+  state,
+  index,
+  assets = null,
+  islandTemplate = null,
+  { skipGlbBody = false, metrics = null } = {},
+) {
   const group = new THREE.Group()
   group.name = `island-${level.id}`
   const rng = mulberry32(index * 9973 + (level.level || 1) * 131)
   const completed = state === 'completed'
   const current = state === 'current'
   const locked = state === 'locked'
-  const shape = index % 3 // 0 wide flat, 1 tall narrow, 2 cliffed
+  const shape = index % 3
 
   const scaleXZ = shape === 1 ? 0.78 : shape === 0 ? 1.35 : 1.05
   let topR = TOP_RADIUS * scaleXZ
   let surfaceY = SURFACE_Y
 
-  const glb = addGlbIslandBody(group, islandTemplate, locked, rng)
-  if (glb) {
-    topR = glb.topR
-    surfaceY = glb.surfaceY
-    // Kenney trees/rocks only — GLB already has its own structures.
+  if (skipGlbBody && metrics) {
+    topR = metrics.topR
+    surfaceY = metrics.surfaceY
     decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
       trees: true,
       rocks: true,
@@ -394,15 +399,27 @@ function buildFantasyIsland(level, theme, state, index, assets = null, islandTem
       shape,
     })
   } else {
-    const body = buildProceduralIslandBody(group, locked, rng, shape, topR)
-    topR = body.topR
-    surfaceY = body.surfaceY
-    decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
-      trees: true,
-      rocks: true,
-      buildings: true,
-      shape,
-    })
+    const glb = addGlbIslandBody(group, islandTemplate, locked, rng)
+    if (glb) {
+      topR = glb.topR
+      surfaceY = glb.surfaceY
+      decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
+        trees: true,
+        rocks: true,
+        buildings: false,
+        shape,
+      })
+    } else {
+      const body = buildProceduralIslandBody(group, locked, rng, shape, topR)
+      topR = body.topR
+      surfaceY = body.surfaceY
+      decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
+        trees: true,
+        rocks: true,
+        buildings: true,
+        shape,
+      })
+    }
   }
 
   let edgeGlow = null
@@ -442,17 +459,17 @@ function buildFantasyIsland(level, theme, state, index, assets = null, islandTem
   growth.position.set(0, surfaceY + growthH / 2, 0)
   group.add(growth)
 
-  const labelY = surfaceY + (shape === 1 ? 18 : 14)
+  const labelY = surfaceY + (shape === 1 ? 26 : 22)
   const label = makeLabel(`Level ${level.level}: ${level.name}`, {
-    scaleX: 16,
-    scaleY: 2.8,
-    fontSize: 28,
+    scaleX: 28,
+    scaleY: 5.2,
+    fontSize: 40,
   })
   label.position.set(0, labelY, 0)
   group.add(label)
 
-  const here = makeLabel('YOU ARE HERE', { scaleX: 11, scaleY: 2.2, fontSize: 24 })
-  here.position.set(0, labelY + 2.8, 0)
+  const here = makeLabel('YOU ARE HERE', { scaleX: 16, scaleY: 3.2, fontSize: 30 })
+  here.position.set(0, labelY + 4.2, 0)
   here.visible = false
   group.add(here)
 
@@ -474,13 +491,37 @@ function buildFantasyIsland(level, theme, state, index, assets = null, islandTem
     if (obj.isMesh) obj.userData = { ...group.userData, hereMarker: here, edgeGlow }
   })
 
+  // Fat invisible pick volume covering the full island body (GLB or procedural).
+  const hitR = Math.max(topR * 1.35, metrics?.size ? Math.max(metrics.size.x, metrics.size.z) * 0.55 : 0, 16)
+  const hitH = Math.max(metrics?.size?.y ? metrics.size.y * 1.1 : 36, 36)
   const hit = new THREE.Mesh(
-    new THREE.CylinderGeometry(topR + 4, topR + 4.5, 18, 16),
-    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
+    new THREE.CylinderGeometry(hitR, hitR * 0.85, hitH, 16),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false,
+    }),
   )
-  hit.position.y = surfaceY + 1
+  hit.position.y = surfaceY - hitH * 0.25
   hit.userData = group.userData
+  // Always raycastable even when camera is close / looking from below.
+  hit.raycast = THREE.Mesh.prototype.raycast
   group.add(hit)
+
+  // Extra sphere around the floating level name so the label itself opens the level.
+  const labelHit = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(hitR * 0.55, 12), 12, 10),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  )
+  labelHit.position.set(0, labelY, 0)
+  labelHit.userData = group.userData
+  group.add(labelHit)
 
   return group
 }
@@ -572,14 +613,6 @@ export function buildSunsetSky() {
   g.addColorStop(1, '#ff9a50') // warm horizon
   ctx.fillStyle = g
   ctx.fillRect(0, 0, 8, 512)
-  // Faint stars only at very top
-  ctx.fillStyle = 'rgba(255,255,255,0.35)'
-  for (let i = 0; i < 18; i++) {
-    const y = Math.random() * 90
-    ctx.beginPath()
-    ctx.arc(1 + Math.random() * 6, y, Math.random() * 0.9, 0, Math.PI * 2)
-    ctx.fill()
-  }
   const skyTex = new THREE.CanvasTexture(canvas)
   skyTex.colorSpace = THREE.SRGBColorSpace
   const sky = new THREE.Mesh(
@@ -588,63 +621,57 @@ export function buildSunsetSky() {
   )
   group.add(sky)
 
-  // Soft sun near horizon
-  const sun = new THREE.Mesh(
-    new THREE.CircleGeometry(32, 32),
+  // Full moon — upper right, far back (world-fixed with the sky, not camera-attached)
+  const moon = new THREE.Mesh(
+    new THREE.SphereGeometry(26, 32, 32),
     new THREE.MeshBasicMaterial({
-      color: 0xffe0a8,
+      color: 0xfff4cc,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    }),
+  )
+  moon.position.set(240, 250, -360)
+  group.add(moon)
+
+  const moonHalo = new THREE.Mesh(
+    new THREE.SphereGeometry(40, 32, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0xffe8b0,
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  )
+  moonHalo.position.copy(moon.position)
+  group.add(moonHalo)
+
+  // Star field — upper purple sky only (not orange/pink lower half)
+  const starCount = 2000
+  const starPos = new Float32Array(starCount * 3)
+  for (let i = 0; i < starCount; i++) {
+    const theta = Math.random() * Math.PI * 2
+    // Keep stars near the top pole so they sit in the purple band only.
+    const phi = Math.random() * (Math.PI * 0.32)
+    const r = 390 + Math.random() * 25
+    starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta)
+    starPos[i * 3 + 1] = r * Math.cos(phi)
+    starPos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta)
+  }
+  const stars = new THREE.Points(
+    new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(starPos, 3)),
+    new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.75,
+      sizeAttenuation: true,
       transparent: true,
       opacity: 0.9,
       depthWrite: false,
     }),
   )
-  sun.position.set(-60, -8, -220)
-  group.add(sun)
-  const sunGlow = new THREE.Mesh(
-    new THREE.CircleGeometry(55, 32),
-    new THREE.MeshBasicMaterial({
-      color: 0xff9040,
-      transparent: true,
-      opacity: 0.28,
-      depthWrite: false,
-    }),
-  )
-  sunGlow.position.copy(sun.position)
-  sunGlow.position.z += 2
-  group.add(sunGlow)
-
-  // Distant mountain silhouettes (no clouds)
-  const mountainMat = new THREE.MeshBasicMaterial({
-    color: 0x3a2048,
-    transparent: true,
-    opacity: 0.35,
-    depthWrite: false,
-  })
-  const ridge = [
-    [-180, 18, -200],
-    [-90, 32, -210],
-    [0, 22, -205],
-    [100, 38, -215],
-    [200, 20, -200],
-  ]
-  for (const [x, h, z] of ridge) {
-    const m = new THREE.Mesh(new THREE.ConeGeometry(28 + Math.abs(x) * 0.04, h, 4), mountainMat)
-    m.position.set(x, -28 + h * 0.35, z)
-    m.rotation.y = 0.4
-    group.add(m)
-  }
-  // Second softer ridge
-  const farMat = mountainMat.clone()
-  farMat.opacity = 0.22
-  farMat.color.set(0x2a1838)
-  for (let i = 0; i < 6; i++) {
-    const m = new THREE.Mesh(
-      new THREE.ConeGeometry(40, 14 + (i % 3) * 8, 3),
-      farMat,
-    )
-    m.position.set((i - 2.5) * 70, -32, -250)
-    group.add(m)
-  }
+  stars.frustumCulled = false
+  group.add(stars)
 
   return group
 }
@@ -657,6 +684,8 @@ export function createIslandRoadmap(scene, opts) {
     lastLevelId = null,
     assets = null,
     islandModel = null,
+    // Baseline perf path: deep-clone the GLB once per island (?islands=clone).
+    forceCloneIslands = false,
   } = opts
 
   const root = new THREE.Group()
@@ -675,16 +704,8 @@ export function createIslandRoadmap(scene, opts) {
 
   const sunLight = new THREE.DirectionalLight(0xffb070, 1.45)
   sunLight.position.set(-80, -10, 40)
-  sunLight.castShadow = true
-  sunLight.shadow.mapSize.set(1024, 1024)
-  sunLight.shadow.camera.near = 10
-  sunLight.shadow.camera.far = 400
-  sunLight.shadow.camera.left = -120
-  sunLight.shadow.camera.right = 120
-  sunLight.shadow.camera.top = 200
-  sunLight.shadow.camera.bottom = -80
-  sunLight.shadow.bias = -0.0005
-  sunLight.shadow.radius = 3
+  // Island GLBs are heavy — skip shadow maps on the roadmap.
+  sunLight.castShadow = false
   root.add(sunLight)
 
   const fill = new THREE.DirectionalLight(0xff9060, 0.45)
@@ -693,21 +714,66 @@ export function createIslandRoadmap(scene, opts) {
 
   root.add(new THREE.AmbientLight(0xffe8d0, 0.4))
 
+  const useInstances = Boolean(islandModel) && levels.length > 0 && !forceCloneIslands
+  const metrics = useInstances
+    ? getIslandPlacementMetrics(ISLAND_MODEL_SCALE, SURFACE_Y)
+    : null
+  const instanced = useInstances
+    ? createInstancedIslandBodies(root, islandModel, levels.length)
+    : null
+  const instanceMatrix = new THREE.Matrix4()
+  const instancePos = new THREE.Vector3()
+  const instanceQuat = new THREE.Quaternion()
+  const instanceScale = new THREE.Vector3(
+    ISLAND_MODEL_SCALE,
+    ISLAND_MODEL_SCALE,
+    ISLAND_MODEL_SCALE,
+  )
+  const upAxis = new THREE.Vector3(0, 1, 0)
+
+  if (useInstances) {
+    console.log(
+      `[roadmap] instanced islands: ${levels.length} islands × ${instanced.partCount} merged draw call(s)`,
+    )
+    // Instanced GLB bodies are the thing you see — make them clickable by instanceId.
+    for (const mesh of instanced.meshes) {
+      mesh.userData.kind = 'islandInstances'
+      mesh.userData.levels = levels
+      clickables.push(mesh)
+    }
+  } else if (forceCloneIslands && islandModel) {
+    console.log(`[roadmap] clone baseline: ${levels.length} full GLB clones`)
+  }
+
   levels.forEach((level, i) => {
     const theme = themeForLevel(level.level || i + 1)
     const off = islandOffset(i)
     const y = i * ISLAND_GAP_Y
+    const rng = mulberry32(i * 9973 + (level.level || 1) * 131)
+    const rotY = rng() * Math.PI * 2
+    const locked = (level.state || 'locked') === 'locked'
+
+    if (instanced && metrics) {
+      instancePos.set(off.x, y + metrics.yLift, off.z)
+      instanceQuat.setFromAxisAngle(upAxis, rotY)
+      instanceMatrix.compose(instancePos, instanceQuat, instanceScale)
+      instanced.setInstance(i, instanceMatrix, locked)
+    }
+
     const island = buildFantasyIsland(
       level,
       theme,
       level.state || 'locked',
       i,
       assets,
-      islandModel,
+      useInstances ? null : islandModel,
+      useInstances
+        ? { skipGlbBody: true, metrics }
+        : { skipGlbBody: false, metrics: null },
     )
     island.position.set(off.x, y, off.z)
-    // Model already has a random Y spin; keep group upright for bridges/labels.
     root.add(island)
+    // Hit volumes + overlays (and clones when not instanced).
     island.traverse((obj) => {
       if (obj.isMesh) clickables.push(obj)
     })
@@ -727,6 +793,8 @@ export function createIslandRoadmap(scene, opts) {
       bridges.push(bridge)
     }
   })
+
+  instanced?.finalize()
 
   let pulseT = 0
   let visible = true
@@ -796,17 +864,30 @@ export function createIslandRoadmap(scene, opts) {
     pick(raycaster) {
       const hits = raycaster.intersectObjects(clickables, true)
       for (const hit of hits) {
-        let obj = hit.object
-        while (obj) {
-          if (obj.userData?.kind === 'island' && obj.userData.level) {
+        const obj = hit.object
+        // Clicked the visible instanced GLB body
+        if (obj.userData?.kind === 'islandInstances' && hit.instanceId != null) {
+          const level = obj.userData.levels?.[hit.instanceId]
+          if (level) {
             return {
-              level: obj.userData.level,
-              locked: !!obj.userData.locked,
-              state: obj.userData.state,
+              level,
+              locked: (level.state || 'locked') === 'locked',
+              state: level.state,
               point: hit.point.clone(),
             }
           }
-          obj = obj.parent
+        }
+        let walk = obj
+        while (walk) {
+          if (walk.userData?.kind === 'island' && walk.userData.level) {
+            return {
+              level: walk.userData.level,
+              locked: !!walk.userData.locked,
+              state: walk.userData.state,
+              point: hit.point.clone(),
+            }
+          }
+          walk = walk.parent
         }
       }
       return null

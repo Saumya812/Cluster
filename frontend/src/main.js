@@ -14,7 +14,6 @@ import { createSubjectGlobe } from './subjectGlobe.js'
 import { buildEduCity, growthStatsFromProgress } from './eduCity.js'
 import { CITY_LABELS } from './cities.js'
 import { topicsForLevel } from './levelCurriculum.js'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { createIslandRoadmap, animateCameraTo } from './islandRoadmap.js'
 import { loadKenneyAssets } from './kenneyAssets.js'
 import { loadFantasyIslandModel } from './fantasyIslandModel.js'
@@ -128,7 +127,7 @@ camera.position.set(0, 5, 0)
 // headroom and doesn't scale as the city keeps growing).
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
 renderer.setSize(window.innerWidth, window.innerHeight)
-renderer.setPixelRatio(window.devicePixelRatio)
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 // Bloom accumulates HDR light additively; with hundreds of lit windows
 // packed into a skyline, that adds up fast. Tone mapping rolls off
 // highlights gracefully instead of hard-clipping to a flat white wash,
@@ -138,6 +137,9 @@ renderer.toneMappingExposure = 0.92
 renderer.shadowMap.enabled = true
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 app.appendChild(renderer.domElement)
+
+const CITY_PIXEL_RATIO = Math.min(window.devicePixelRatio, 2)
+const ROADMAP_PIXEL_RATIO = 1
 
 // Dark ground plane(s) so buildings sit on something instead of appearing
 // to float in pure void. Slightly bluer/darker than the buildings' own
@@ -342,19 +344,33 @@ const bloomPass = new UnrealBloomPass(
 composer.addPass(bloomPass)
 composer.addPass(new OutputPass())
 
+function setRoadmapRenderBudget(enabled) {
+  // Roadmap: cap DPR, kill shadow maps + bloom — GLB islands dominate GPU cost.
+  renderer.setPixelRatio(enabled ? ROADMAP_PIXEL_RATIO : CITY_PIXEL_RATIO)
+  renderer.setSize(window.innerWidth, window.innerHeight)
+  composer.setSize(window.innerWidth, window.innerHeight)
+  bloomPass.resolution.set(window.innerWidth, window.innerHeight)
+  renderer.shadowMap.enabled = !enabled
+  bloomPass.enabled = !enabled
+}
+
 function setBloomForMode(mode) {
   if (mode === 'roadmap' || mode === 'globe') {
     bloomPass.strength = 0.06
     bloomPass.threshold = 0.85
+    setRoadmapRenderBudget(true)
   } else {
     bloomPass.strength = 0.22
     bloomPass.threshold = 0.62
+    setRoadmapRenderBudget(false)
   }
 }
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
+  const dpr = appMode === 'roadmap' || appMode === 'globe' ? ROADMAP_PIXEL_RATIO : CITY_PIXEL_RATIO
+  renderer.setPixelRatio(dpr)
   renderer.setSize(window.innerWidth, window.innerHeight)
   composer.setSize(window.innerWidth, window.innerHeight)
   bloomPass.resolution.set(window.innerWidth, window.innerHeight)
@@ -584,7 +600,7 @@ function restoreCityAtmosphere() {
 function applySunsetAtmosphere() {
   scene.background = new THREE.Color(0xff9a5c)
   scene.fog = new THREE.FogExp2(0xffb080, 0.00045)
-  camera.far = 2500
+  camera.far = 6000
   camera.updateProjectionMatrix()
   setCityLightsVisible(true)
 }
@@ -1002,9 +1018,197 @@ function setRoadmapHintVisible(visible) {
 }
 
 function disposeRoadmapOrbit() {
-  if (roadmapOrbit) {
-    roadmapOrbit.dispose()
-    roadmapOrbit = null
+  roadmapDragging = false
+  roadmapPointerDown = null
+  // Hand canvas input back to PointerLockControls for city flight.
+  controls.enabled = true
+}
+
+/** Manual roadmap camera — raw mouse events, no Three.js control helpers. */
+const ROADMAP_ROTATE_SPEED = 0.003 // radians per pixel
+const ROADMAP_ZOOM_PER_TICK = 0.18 // fraction of radius per wheel notch
+const ROADMAP_MIN_DIST = 35
+const ROADMAP_MAX_DIST = 3500
+const roadmapCamTarget = new THREE.Vector3()
+const roadmapSpherical = new THREE.Spherical()
+const roadmapOffset = new THREE.Vector3()
+let roadmapDragging = false
+let roadmapLastX = 0
+let roadmapLastY = 0
+let roadmapPointerDown = null
+
+function syncRoadmapSphericalFromCamera() {
+  roadmapOffset.copy(camera.position).sub(roadmapCamTarget)
+  roadmapSpherical.setFromVector3(roadmapOffset)
+}
+
+function applyRoadmapCamera() {
+  roadmapSpherical.phi = Math.max(0.05, Math.min(Math.PI - 0.05, roadmapSpherical.phi))
+  roadmapSpherical.radius = Math.max(
+    ROADMAP_MIN_DIST,
+    Math.min(ROADMAP_MAX_DIST, roadmapSpherical.radius),
+  )
+  roadmapOffset.setFromSpherical(roadmapSpherical)
+  camera.position.copy(roadmapCamTarget).add(roadmapOffset)
+  camera.lookAt(roadmapCamTarget)
+}
+
+function enableRoadmapCamera(target) {
+  roadmapCamTarget.copy(target)
+  syncRoadmapSphericalFromCamera()
+  applyRoadmapCamera()
+  controls.enabled = false
+  if (controls.isLocked) controls.unlock()
+  renderer.domElement.style.cursor = 'grab'
+}
+
+function onRoadmapPointerDown(event) {
+  if (appMode !== 'roadmap') return
+  // Accept clicks from overlays that sit over the canvas (hint is pointer-events:none,
+  // but some browsers still report a non-canvas target for captured events).
+  if (event.button !== 0) return
+  if (event.target?.closest?.('#district-picker, #hud, #blocker, .side-panel, #topic-panel, button, a, input')) {
+    return
+  }
+  roadmapDragging = true
+  roadmapLastX = event.clientX
+  roadmapLastY = event.clientY
+  roadmapPointerDown = { x: event.clientX, y: event.clientY }
+  hideIslandTooltip()
+  renderer.domElement.style.cursor = 'grabbing'
+  try {
+    renderer.domElement.setPointerCapture(event.pointerId)
+  } catch {
+    /* ignore */
+  }
+}
+
+function onRoadmapPointerMove(event) {
+  if (appMode !== 'roadmap' || !roadmapDragging) return
+  const dx = event.clientX - roadmapLastX
+  const dy = event.clientY - roadmapLastY
+  roadmapLastX = event.clientX
+  roadmapLastY = event.clientY
+  // 1:1 — apply immediately, no damping / momentum
+  roadmapSpherical.theta -= dx * ROADMAP_ROTATE_SPEED
+  roadmapSpherical.phi -= dy * ROADMAP_ROTATE_SPEED
+  applyRoadmapCamera()
+}
+
+function onRoadmapPointerUp(event) {
+  if (appMode !== 'roadmap') return
+  const wasDragging = roadmapDragging
+  roadmapDragging = false
+  renderer.domElement.style.cursor = 'grab'
+  try {
+    renderer.domElement.releasePointerCapture(event.pointerId)
+  } catch {
+    /* ignore */
+  }
+  if (!wasDragging || !roadmapPointerDown) return
+
+  const dx = event.clientX - roadmapPointerDown.x
+  const dy = event.clientY - roadmapPointerDown.y
+  roadmapPointerDown = null
+  // Short click (not a drag) → pick island
+  if (Math.hypot(dx, dy) > 6) return
+
+  cityPointer.x = (event.clientX / window.innerWidth) * 2 - 1
+  cityPointer.y = -(event.clientY / window.innerHeight) * 2 + 1
+  cityRaycaster.setFromCamera(cityPointer, camera)
+  const hit = islandRoadmap?.pick(cityRaycaster)
+  if (!hit) {
+    hideIslandTooltip()
+    return
+  }
+  if (hit.locked) {
+    const prev = Math.max(1, (hit.level.level || 1) - 1)
+    showIslandTooltip(`Complete Level ${prev} to unlock`, event.clientX, event.clientY)
+    return
+  }
+  hideIslandTooltip()
+  enterLevelFromRoadmap(hit.level)
+}
+
+/** Dev/test helper: pick island under NDC coords (or screen center). */
+window.__clusterPickRoadmap = (nx = 0, ny = 0) => {
+  cityPointer.set(nx, ny)
+  cityRaycaster.setFromCamera(cityPointer, camera)
+  const hit = islandRoadmap?.pick(cityRaycaster)
+  return hit
+    ? { name: hit.level?.name, level: hit.level?.level, locked: hit.locked, state: hit.state }
+    : null
+}
+
+window.__clusterRoadmapDebug = () => {
+  const entries = islandRoadmap?.islandEntries || []
+  const clickables = islandRoadmap?.clickables || []
+  const first = entries[0]
+  let aimed = null
+  if (first) {
+    const world = new THREE.Vector3(first.off.x, first.y + 8, first.off.z)
+    const ndc = world.clone().project(camera)
+    cityPointer.set(ndc.x, ndc.y)
+    cityRaycaster.setFromCamera(cityPointer, camera)
+    aimed = {
+      ndc: { x: ndc.x, y: ndc.y, z: ndc.z },
+      hit: (() => {
+        const h = islandRoadmap.pick(cityRaycaster)
+        return h ? { name: h.level?.name, locked: h.locked, state: h.state } : null
+      })(),
+      rawHits: cityRaycaster.intersectObjects(clickables, true).slice(0, 5).map((h) => ({
+        name: h.object?.name,
+        kind: h.object?.userData?.kind,
+        instanceId: h.instanceId,
+        dist: h.distance,
+        type: h.object?.type,
+      })),
+    }
+  }
+  return {
+    mode: appMode,
+    clickableCount: clickables.length,
+    islandCount: entries.length,
+    levels: islandRoadmap?.levels?.map((l) => ({ id: l.id, name: l.name, state: l.state })),
+    cam: { x: camera.position.x, y: camera.position.y, z: camera.position.z, radius: roadmapSpherical.radius },
+    aimed,
+  }
+}
+
+function onRoadmapWheel(event) {
+  if (appMode === 'ml') {
+    onCityAltitudeWheel(event)
+    return
+  }
+  if (appMode !== 'roadmap') return
+  if (event.target?.closest?.('#district-picker, #hud, #blocker, .side-panel, #topic-panel, input, textarea')) {
+    return
+  }
+  event.preventDefault()
+  const tick = Math.sign(event.deltaY)
+  if (!tick) return
+  // Scroll up → zoom in · scroll down → zoom out (orbit dolly)
+  roadmapSpherical.radius *= 1 + tick * ROADMAP_ZOOM_PER_TICK
+  applyRoadmapCamera()
+}
+
+const CITY_SCROLL_ALTITUDE = 9 // units per wheel notch
+
+function onCityAltitudeWheel(event) {
+  // Don't steal scroll from HUD / search / side panels
+  if (event.target !== renderer.domElement && !renderer.domElement.contains(event.target)) {
+    if (event.target?.closest?.('#hud, #blocker, .side-panel, #topic-panel')) return
+  }
+  event.preventDefault()
+  const tick = Math.sign(event.deltaY)
+  if (!tick) return
+  // Scroll up → climb · scroll down → descend
+  camera.position.y -= tick * CITY_SCROLL_ALTITUDE
+  const b = mlCity?.flightBounds
+  if (b) {
+    camera.position.y = Math.min(b.maxY, Math.max(b.minY, camera.position.y))
+  } else {
+    camera.position.y = Math.min(220, Math.max(4, camera.position.y))
   }
 }
 
@@ -1083,6 +1287,8 @@ async function loadIslandRoadmap(cityId) {
 
   activeCityId = cityId
   activeLevel = null
+  const forceCloneIslands =
+    new URLSearchParams(window.location.search).get('islands') === 'clone'
   islandRoadmap = createIslandRoadmap(scene, {
     cityId,
     cityLabel: payload.label || cityLabel,
@@ -1091,7 +1297,9 @@ async function loadIslandRoadmap(cityId) {
     lastLevelId: focusLevelId,
     assets: kenneyAssets,
     islandModel,
+    forceCloneIslands,
   })
+  window.__clusterIslandMode = forceCloneIslands ? 'clone' : 'instanced'
 
   applySunsetAtmosphere()
   setBloomForMode('roadmap')
@@ -1101,16 +1309,7 @@ async function loadIslandRoadmap(cityId) {
   camera.lookAt(pose.lookAt)
 
   disposeRoadmapOrbit()
-  roadmapOrbit = new OrbitControls(camera, renderer.domElement)
-  roadmapOrbit.enableDamping = true
-  roadmapOrbit.dampingFactor = 0.05
-  roadmapOrbit.zoomSpeed = 1.5
-  roadmapOrbit.rotateSpeed = 0.8
-  roadmapOrbit.enablePan = true
-  roadmapOrbit.minDistance = 50
-  roadmapOrbit.maxDistance = 2000
-  roadmapOrbit.target.copy(pose.target || pose.lookAt)
-  roadmapOrbit.update()
+  enableRoadmapCamera(pose.target || pose.lookAt)
 
   setCityLightsVisible(true)
   setRoadmapHintVisible(true)
@@ -1197,8 +1396,17 @@ async function loadLevelCity(cityId, level) {
   }
 
   applySunsetAtmosphere()
-  camera.position.set(0, 18, 48)
-  camera.lookAt(0, 10, 0)
+  const spawn = mlCity.spawnPose
+  if (spawn?.position && spawn?.lookAt) {
+    camera.position.copy(spawn.position)
+    camera.lookAt(spawn.lookAt)
+  } else {
+    camera.position.set(0, 72, 140)
+    camera.lookAt(0, 16, 0)
+  }
+  // Hide subject-globe chrome while flying the level city
+  const globeHint = document.getElementById('globe-hint')
+  if (globeHint) globeHint.hidden = true
 
   setBloomForMode('ml')
   cullController = setupDistanceCulling(scene, camera, scene.fog?.density || 0.00045)
@@ -1260,7 +1468,6 @@ let hud = null
 let subjectGlobe = null
 let mlCity = null
 let islandRoadmap = null
-let roadmapOrbit = null
 let districtPicker = null
 let topicPanel = null
 let buildingSidePanel = null
@@ -1471,10 +1678,7 @@ async function returnToRoadmap() {
     if (level && islandRoadmap) {
       const overview = islandRoadmap.cameraStartPose(level.id)
       await animateCameraTo(camera, overview, 900)
-      if (roadmapOrbit) {
-        roadmapOrbit.target.copy(overview.target || overview.lookAt)
-        roadmapOrbit.update()
-      }
+      enableRoadmapCamera(overview.target || overview.lookAt)
     }
     escArmedForBack = true
   } catch (err) {
@@ -1606,15 +1810,9 @@ document.addEventListener('keydown', (event) => {
   }
 })
 
-let roadmapPointerDown = null
-
 window.addEventListener('pointerdown', (event) => {
   if (event.target !== renderer.domElement) return
-  if (appMode === 'roadmap') {
-    roadmapPointerDown = { x: event.clientX, y: event.clientY }
-    hideIslandTooltip()
-    return
-  }
+  if (appMode === 'roadmap') return // handled by onRoadmapPointerDown
 
   if (appMode !== 'ml' || topicPanel?.isOpen || buildingSidePanel?.isOpen) return
   if (controls.isLocked) return
@@ -1630,34 +1828,13 @@ window.addEventListener('pointerdown', (event) => {
   }
 })
 
-window.addEventListener('pointerup', (event) => {
-  if (appMode !== 'roadmap' || !roadmapPointerDown) return
-  if (event.target !== renderer.domElement && event.target !== document.body) {
-    roadmapPointerDown = null
-    return
-  }
-  const dx = event.clientX - roadmapPointerDown.x
-  const dy = event.clientY - roadmapPointerDown.y
-  roadmapPointerDown = null
-  // Treat as orbit drag if moved more than a few pixels
-  if (Math.hypot(dx, dy) > 6) return
-
-  cityPointer.x = (event.clientX / window.innerWidth) * 2 - 1
-  cityPointer.y = -(event.clientY / window.innerHeight) * 2 + 1
-  cityRaycaster.setFromCamera(cityPointer, camera)
-  const hit = islandRoadmap?.pick(cityRaycaster)
-  if (!hit) {
-    hideIslandTooltip()
-    return
-  }
-  if (hit.locked) {
-    const prev = Math.max(1, (hit.level.level || 1) - 1)
-    showIslandTooltip(`Complete Level ${prev} to unlock`, event.clientX, event.clientY)
-    return
-  }
-  hideIslandTooltip()
-  enterLevelFromRoadmap(hit.level)
-})
+// Roadmap orbit + zoom: listen on window so scroll/click still work when
+// the event target isn't the canvas (overlays, body, etc.).
+window.addEventListener('pointerdown', onRoadmapPointerDown)
+window.addEventListener('pointermove', onRoadmapPointerMove)
+window.addEventListener('pointerup', onRoadmapPointerUp)
+window.addEventListener('pointercancel', onRoadmapPointerUp)
+window.addEventListener('wheel', onRoadmapWheel, { passive: false })
 
 // Click-to-learn while flying: raycast center on KeyE
 document.addEventListener('keydown', (event) => {
@@ -1683,6 +1860,11 @@ void loadFantasyIslandModel(() => {}).catch((err) => {
 })
 
 let prevTime = performance.now()
+let fpsFrames = 0
+let fpsLast = performance.now()
+let fpsValue = 0
+const fpsEl = document.getElementById('fps-counter')
+window.__clusterFps = () => fpsValue
 
 function animate() {
   requestAnimationFrame(animate)
@@ -1691,11 +1873,18 @@ function animate() {
   const delta = Math.min((time - prevTime) / 1000, 0.1)
   prevTime = time
 
+  fpsFrames += 1
+  if (time - fpsLast >= 500) {
+    fpsValue = Math.round((fpsFrames * 1000) / (time - fpsLast))
+    if (fpsEl) fpsEl.textContent = `${fpsValue} FPS`
+    fpsFrames = 0
+    fpsLast = time
+  }
+
   if (appMode === 'globe') {
     subjectGlobe?.update(time / 1000, delta)
   } else if (appMode === 'roadmap') {
     islandRoadmap?.update(time / 1000, delta)
-    roadmapOrbit?.update()
   } else if (appMode === 'ml') {
     updateFlightMovement(delta)
     planeRig?.update(delta, move)

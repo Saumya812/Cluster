@@ -27,6 +27,24 @@ body {
   display: block;
 }
 
+#fps-counter {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 100;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(6, 10, 20, 0.75);
+  border: 1px solid rgba(232, 238, 248, 0.2);
+  color: #e8eef8;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  user-select: none;
+}
+
 canvas {
   display: block;
 }
@@ -499,22 +517,43 @@ canvas {
   border: 1px solid var(--panel-edge);
   border-left: 3px solid var(--neon-amber);
   border-radius: 2px;
-  padding: 12px 14px 12px 12px;
+  padding: 14px 16px 14px 14px;
   color: var(--ink);
   font-family: var(--font-ui);
-  max-width: min(340px, calc(100vw - 36px));
+  max-width: min(420px, calc(100vw - 36px));
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   pointer-events: auto;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(10px);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(61, 231, 255, 0.45) rgba(255, 255, 255, 0.06);
+}
+
+#hud-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+#hud-panel::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+}
+
+#hud-panel::-webkit-scrollbar-thumb {
+  background: rgba(61, 231, 255, 0.4);
+  border-radius: 4px;
 }
 
 #hud-title {
   font-family: var(--font-display);
-  font-size: 1.35rem;
-  letter-spacing: 0.18em;
+  font-size: clamp(1.85rem, 3.2vw, 2.55rem);
+  letter-spacing: 0.12em;
   color: var(--neon-amber);
-  margin-bottom: 4px;
-  line-height: 1;
+  margin-bottom: 6px;
+  line-height: 1.05;
+  text-shadow: 0 0 18px rgba(255, 179, 71, 0.35);
+  word-break: break-word;
 }
 
 #hud-stat-line .stat-em {

@@ -17,6 +17,7 @@ import { topicsForLevel } from './levelCurriculum.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { createIslandRoadmap, animateCameraTo } from './islandRoadmap.js'
 import { loadKenneyAssets } from './kenneyAssets.js'
+import { loadFantasyIslandModel } from './fantasyIslandModel.js'
 import { createDistrictPicker } from './districtPicker.js'
 import { createTopicPanel } from './topicPanel.js'
 import { createBuildingSidePanel } from './buildingSidePanel.js'
@@ -1045,13 +1046,22 @@ async function loadIslandRoadmap(cityId) {
   let kenneyAssets = null
   try {
     kenneyAssets = await loadKenneyAssets((fraction, label) => {
-      setLoadingProgress(0.05 + fraction * 0.4, label || 'Building your world…')
+      setLoadingProgress(0.05 + fraction * 0.35, label || 'Building your world…')
     })
   } catch (err) {
     console.warn('[roadmap] Kenney assets unavailable, using procedural fallback', err)
   }
 
-  setLoadingProgress(0.5, 'Loading ' + cityLabel + ' islands…')
+  let islandModel = null
+  try {
+    islandModel = await loadFantasyIslandModel((fraction, label) => {
+      setLoadingProgress(0.4 + fraction * 0.15, label || 'Loading island model…')
+    })
+  } catch (err) {
+    console.warn('[roadmap] Island GLB unavailable, using procedural islands', err)
+  }
+
+  setLoadingProgress(0.55, 'Loading ' + cityLabel + ' islands…')
 
   let payload = { levels: [], label: cityLabel, accent: DISTRICT_ACCENTS[cityId] }
   try {
@@ -1080,6 +1090,7 @@ async function loadIslandRoadmap(cityId) {
     levels: payload.levels || [],
     lastLevelId: focusLevelId,
     assets: kenneyAssets,
+    islandModel,
   })
 
   applySunsetAtmosphere()
@@ -1092,10 +1103,12 @@ async function loadIslandRoadmap(cityId) {
   disposeRoadmapOrbit()
   roadmapOrbit = new OrbitControls(camera, renderer.domElement)
   roadmapOrbit.enableDamping = true
-  roadmapOrbit.dampingFactor = 0.06
+  roadmapOrbit.dampingFactor = 0.05
+  roadmapOrbit.zoomSpeed = 1.5
+  roadmapOrbit.rotateSpeed = 0.8
   roadmapOrbit.enablePan = true
   roadmapOrbit.minDistance = 50
-  roadmapOrbit.maxDistance = 600
+  roadmapOrbit.maxDistance = 2000
   roadmapOrbit.target.copy(pose.target || pose.lookAt)
   roadmapOrbit.update()
 
@@ -1161,7 +1174,7 @@ async function loadLevelCity(cityId, level) {
     flyToPoint,
     mode: 'ml',
     mapLayout: mlCity.mapLayout,
-    growthInfo: growthStatsFromProgress(progress, mlCity.totalBuildings),
+    growthInfo: growthStatsFromProgress(progress, mlCity.totalBuildings, mlCity.buildingsById),
   })
 
   const brand = document.querySelector('#hud-title')
@@ -1172,7 +1185,7 @@ async function loadLevelCity(cityId, level) {
   if (search) search.placeholder = 'Fly to a subtopic…'
   const location = document.getElementById('hud-location')
   if (location) {
-    const stats = growthStatsFromProgress(progress, mlCity.totalBuildings)
+    const stats = growthStatsFromProgress(progress, mlCity.totalBuildings, mlCity.buildingsById)
     location.textContent =
       'Level tower · ' +
       stats.completed +
@@ -1220,7 +1233,11 @@ function openBuildingTopic(buildingId) {
 function refreshGrowthHud(progressList) {
   if (!mlCity) return
   mlCity.applyProgress(progressList)
-  const stats = growthStatsFromProgress(progressList, mlCity.totalBuildings)
+  const stats = growthStatsFromProgress(
+    progressList,
+    mlCity.totalBuildings,
+    mlCity.buildingsById,
+  )
   hud?.setGrowthInfo?.(stats)
   const location = document.getElementById('hud-location')
   if (location) {
@@ -1657,9 +1674,12 @@ setCityLightsVisible(false)
 setLoadingProgress(1, 'Ready')
 bootGlobe()
 
-// Warm Kenney nature/city kits in the background so the first roadmap is faster
+// Warm Kenney nature/city kits + island GLB in the background so the first roadmap is faster
 void loadKenneyAssets(() => {}).catch((err) => {
-  console.warn('[kenney] background preload failed', err)
+  console.warn('[boot] Kenney preload skipped', err)
+})
+void loadFantasyIslandModel(() => {}).catch((err) => {
+  console.warn('[boot] Island GLB preload skipped', err)
 })
 
 let prevTime = performance.now()

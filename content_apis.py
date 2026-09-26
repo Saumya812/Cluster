@@ -71,19 +71,15 @@ async def google_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
         return []
     cached = _cache_get_json("search_cache", query)
     if cached is not None:
-        return cached
+        # Ignore stale placeholder entries cached before CSE was configured.
+        if not (
+            len(cached) == 1
+            and "Add GOOGLE_CSE_API_KEY" in str((cached[0] or {}).get("snippet") or "")
+        ):
+            return cached
 
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        results = [
-            {
-                "title": f"Search: {query}",
-                "link": f"https://www.google.com/search?q={quote(query)}",
-                "snippet": "Add GOOGLE_CSE_API_KEY to enable Custom Search results.",
-                "displayLink": "google.com",
-            }
-        ]
-        _cache_put_json("search_cache", query, results)
-        return results
+        return []
 
     params = {
         "key": GOOGLE_CSE_API_KEY,
@@ -94,16 +90,7 @@ async def google_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get("https://www.googleapis.com/customsearch/v1", params=params)
         if resp.status_code != 200:
-            results = [
-                {
-                    "title": f"Search unavailable ({resp.status_code})",
-                    "link": f"https://www.google.com/search?q={quote(query)}",
-                    "snippet": "Falling back to Google web search.",
-                    "displayLink": "google.com",
-                }
-            ]
-            _cache_put_json("search_cache", query, results)
-            return results
+            return []
         items = resp.json().get("items") or []
 
     results = []

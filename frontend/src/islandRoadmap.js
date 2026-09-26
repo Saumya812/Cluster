@@ -1,13 +1,18 @@
 /**
- * Fantasy island roadmap — sunset sky, jagged islands, rope bridges, resume marker.
+ * Fantasy island roadmap — sunset sky, GLB islands, rope bridges, resume marker.
  */
 import * as THREE from 'three'
 import { cloneKenneyProp, placeOnSurface } from './kenneyAssets.js'
+import {
+  cloneIslandModel,
+  darkenIslandMaterials,
+} from './fantasyIslandModel.js'
 
 const ISLAND_GAP_Y = 42
 const TOP_RADIUS = 22
 const ZIGZAG_X = 40
 const SURFACE_Y = 1.32
+const ISLAND_MODEL_SCALE = 0.05
 
 function mulberry32(seed) {
   let a = seed >>> 0
@@ -212,59 +217,87 @@ function addDirtPath(parent, topR, locked, rng) {
   }
 }
 
-function decorateWithKenney(parent, topR, locked, rng, assets, shape) {
+function decorateWithKenney(parent, topR, surfaceY, locked, rng, assets, { trees = true, rocks = true, buildings = true, shape = 0 } = {}) {
   if (!assets) return
 
-  const treeCount = 3 + Math.floor(rng() * 3) // 3–5
-  for (let i = 0; i < treeCount; i++) {
-    const a = rng() * Math.PI * 2
-    const r = 3.5 + rng() * Math.max(2, topR - 7)
-    const tree = cloneKenneyProp(assets.trees, rng, { scale: 0.9 + rng() * 0.4, locked })
-    if (!tree) continue
-    placeOnSurface(tree, Math.cos(a) * r, Math.sin(a) * r, SURFACE_Y)
-    parent.add(tree)
+  if (trees) {
+    const treeCount = 3 + Math.floor(rng() * 3) // 3–5
+    for (let i = 0; i < treeCount; i++) {
+      const a = rng() * Math.PI * 2
+      const r = 3.5 + rng() * Math.max(2, topR - 7)
+      const tree = cloneKenneyProp(assets.trees, rng, { scale: 0.9 + rng() * 0.4, locked })
+      if (!tree) continue
+      placeOnSurface(tree, Math.cos(a) * r, Math.sin(a) * r, surfaceY)
+      parent.add(tree)
+    }
   }
 
-  const rockCount = 2 + Math.floor(rng() * 2) // 2–3
-  for (let i = 0; i < rockCount; i++) {
-    const a = rng() * Math.PI * 2
-    const r = topR * (0.72 + rng() * 0.2)
-    const rock = cloneKenneyProp(assets.rocks, rng, { scale: 0.8 + rng() * 0.6, locked })
-    if (!rock) continue
-    placeOnSurface(rock, Math.cos(a) * r, Math.sin(a) * r, SURFACE_Y)
-    parent.add(rock)
+  if (rocks) {
+    const rockCount = 2 + Math.floor(rng() * 2) // 2–3
+    for (let i = 0; i < rockCount; i++) {
+      const a = rng() * Math.PI * 2
+      const r = topR * (0.72 + rng() * 0.2)
+      const rock = cloneKenneyProp(assets.rocks, rng, { scale: 0.8 + rng() * 0.6, locked })
+      if (!rock) continue
+      placeOnSurface(rock, Math.cos(a) * r, Math.sin(a) * r, surfaceY)
+      parent.add(rock)
+    }
   }
 
-  const buildingCount = shape === 1 ? 1 : 2 + Math.floor(rng() * 2) // 2–3 (1 on tall)
-  for (let i = 0; i < buildingCount; i++) {
-    const a = (i / Math.max(buildingCount, 1)) * Math.PI * 2 - Math.PI / 2 + rng() * 0.35
-    const r = shape === 1 ? 1.5 + rng() : 4 + rng() * (topR * 0.35)
-    const bldg = cloneKenneyProp(assets.buildings, rng, {
-      scale: shape === 1 ? 1.1 : 0.65 + rng() * 0.35,
-      locked,
-      yRot: -a + Math.PI,
-    })
-    if (!bldg) continue
-    placeOnSurface(bldg, Math.cos(a) * r, Math.sin(a) * r, SURFACE_Y)
-    parent.add(bldg)
+  if (buildings) {
+    const buildingCount = shape === 1 ? 1 : 2 + Math.floor(rng() * 2) // 2–3 (1 on tall)
+    for (let i = 0; i < buildingCount; i++) {
+      const a = (i / Math.max(buildingCount, 1)) * Math.PI * 2 - Math.PI / 2 + rng() * 0.35
+      const r = shape === 1 ? 1.5 + rng() : 4 + rng() * (topR * 0.35)
+      const bldg = cloneKenneyProp(assets.buildings, rng, {
+        scale: shape === 1 ? 1.1 : 0.65 + rng() * 0.35,
+        locked,
+        yRot: -a + Math.PI,
+      })
+      if (!bldg) continue
+      placeOnSurface(bldg, Math.cos(a) * r, Math.sin(a) * r, surfaceY)
+      parent.add(bldg)
+    }
   }
 }
 
-function buildFantasyIsland(level, theme, state, index, assets = null) {
-  const group = new THREE.Group()
-  group.name = `island-${level.id}`
-  const rng = mulberry32(index * 9973 + (level.level || 1) * 131)
-  const completed = state === 'completed'
-  const current = state === 'current'
-  const locked = state === 'locked'
-  const shape = index % 3 // 0 wide flat, 1 tall narrow, 2 cliffed
+/**
+ * Place a cloned GLB island mesh into `group`, scaled and grounded.
+ * @returns {{ topR: number, surfaceY: number } | null}
+ */
+function addGlbIslandBody(group, islandTemplate, locked, rng) {
+  if (!islandTemplate) return null
 
-  const scaleXZ = shape === 1 ? 0.78 : shape === 0 ? 1.35 : 1.05
+  const model = cloneIslandModel(islandTemplate)
+  model.name = 'island-glb'
+  model.scale.set(ISLAND_MODEL_SCALE, ISLAND_MODEL_SCALE, ISLAND_MODEL_SCALE)
+  model.rotation.y = rng() * Math.PI * 2
+  model.updateMatrixWorld(true)
+
+  const box = new THREE.Box3().setFromObject(model)
+  const size = new THREE.Vector3()
+  box.getSize(size)
+  // Sit the grassy top near SURFACE_Y so props/bridges keep prior relative heights.
+  model.position.y += SURFACE_Y - box.max.y
+  model.updateMatrixWorld(true)
+
+  if (locked) {
+    darkenIslandMaterials(model, 0.4)
+  }
+
+  group.add(model)
+
+  const placed = new THREE.Box3().setFromObject(model)
+  const placedSize = new THREE.Vector3()
+  placed.getSize(placedSize)
+  const topR = Math.max(placedSize.x, placedSize.z) * 0.42
+  return { topR: Math.max(topR, 8), surfaceY: placed.max.y }
+}
+
+function buildProceduralIslandBody(group, locked, rng, shape, topR) {
   const tipH = shape === 1 ? 26 + rng() * 8 : 18 + rng() * 10
-  const topR = TOP_RADIUS * scaleXZ
-  const rockMap = makeRockTexture(index * 917 + 42)
+  const rockMap = makeRockTexture(Math.floor(rng() * 10000))
 
-  // Primary jagged stalactite base pointing downward (procedural — keep)
   const tip = new THREE.Mesh(
     new THREE.ConeGeometry(topR * 0.55, tipH, 5 + Math.floor(rng() * 3)),
     rockMat(locked, 0x4a4540, rockMap),
@@ -310,7 +343,6 @@ function buildFantasyIsland(level, theme, state, index, assets = null) {
   shelf.receiveShadow = true
   group.add(shelf)
 
-  // Flat lush green top
   const grass = new THREE.Mesh(
     new THREE.CylinderGeometry(topR, topR * 0.99, 0.55, 16),
     grassMat(locked, 0x3cb043),
@@ -334,7 +366,44 @@ function buildFantasyIsland(level, theme, state, index, assets = null) {
   }
 
   addDirtPath(group, topR, locked, rng)
-  decorateWithKenney(group, topR, locked, rng, assets, shape)
+  return { topR, surfaceY: SURFACE_Y }
+}
+
+function buildFantasyIsland(level, theme, state, index, assets = null, islandTemplate = null) {
+  const group = new THREE.Group()
+  group.name = `island-${level.id}`
+  const rng = mulberry32(index * 9973 + (level.level || 1) * 131)
+  const completed = state === 'completed'
+  const current = state === 'current'
+  const locked = state === 'locked'
+  const shape = index % 3 // 0 wide flat, 1 tall narrow, 2 cliffed
+
+  const scaleXZ = shape === 1 ? 0.78 : shape === 0 ? 1.35 : 1.05
+  let topR = TOP_RADIUS * scaleXZ
+  let surfaceY = SURFACE_Y
+
+  const glb = addGlbIslandBody(group, islandTemplate, locked, rng)
+  if (glb) {
+    topR = glb.topR
+    surfaceY = glb.surfaceY
+    // Kenney trees/rocks only — GLB already has its own structures.
+    decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
+      trees: true,
+      rocks: true,
+      buildings: false,
+      shape,
+    })
+  } else {
+    const body = buildProceduralIslandBody(group, locked, rng, shape, topR)
+    topR = body.topR
+    surfaceY = body.surfaceY
+    decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
+      trees: true,
+      rocks: true,
+      buildings: true,
+      shape,
+    })
+  }
 
   let edgeGlow = null
   if (current) {
@@ -348,7 +417,7 @@ function buildFantasyIsland(level, theme, state, index, assets = null) {
       }),
     )
     edgeGlow.rotation.x = Math.PI / 2
-    edgeGlow.position.y = 1.4
+    edgeGlow.position.y = surfaceY + 0.15
     group.add(edgeGlow)
   }
 
@@ -370,10 +439,10 @@ function buildFantasyIsland(level, theme, state, index, assets = null) {
       opacity: locked ? 0.65 : 1,
     }),
   )
-  growth.position.set(0, 1.2 + growthH / 2, 0)
+  growth.position.set(0, surfaceY + growthH / 2, 0)
   group.add(growth)
 
-  const labelY = shape === 1 ? 20 : 16
+  const labelY = surfaceY + (shape === 1 ? 18 : 14)
   const label = makeLabel(`Level ${level.level}: ${level.name}`, {
     scaleX: 16,
     scaleY: 2.8,
@@ -409,7 +478,7 @@ function buildFantasyIsland(level, theme, state, index, assets = null) {
     new THREE.CylinderGeometry(topR + 4, topR + 4.5, 18, 16),
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
   )
-  hit.position.y = 2
+  hit.position.y = surfaceY + 1
   hit.userData = group.userData
   group.add(hit)
 
@@ -581,7 +650,14 @@ export function buildSunsetSky() {
 }
 
 export function createIslandRoadmap(scene, opts) {
-  const { cityId, cityLabel = cityId, levels = [], lastLevelId = null, assets = null } = opts
+  const {
+    cityId,
+    cityLabel = cityId,
+    levels = [],
+    lastLevelId = null,
+    assets = null,
+    islandModel = null,
+  } = opts
 
   const root = new THREE.Group()
   root.name = `islandRoadmap-${cityId}`
@@ -621,9 +697,16 @@ export function createIslandRoadmap(scene, opts) {
     const theme = themeForLevel(level.level || i + 1)
     const off = islandOffset(i)
     const y = i * ISLAND_GAP_Y
-    const island = buildFantasyIsland(level, theme, level.state || 'locked', i, assets)
+    const island = buildFantasyIsland(
+      level,
+      theme,
+      level.state || 'locked',
+      i,
+      assets,
+      islandModel,
+    )
     island.position.set(off.x, y, off.z)
-    island.rotation.y = ((i * 41) % 50) * 0.018
+    // Model already has a random Y spin; keep group upright for bridges/labels.
     root.add(island)
     island.traverse((obj) => {
       if (obj.isMesh) clickables.push(obj)
@@ -654,12 +737,13 @@ export function createIslandRoadmap(scene, opts) {
     const focusY = stackHeight * 0.45
     const focusX = 0
     const focusZ = 0
-    const dist = Math.max(220, stackHeight * 0.85 + 80)
+    // 3x farther than the original overview so the camera starts outside the islands.
+    const dist = Math.max(220, stackHeight * 0.85 + 80) * 3
     const angle = Math.PI / 5
     return {
       position: new THREE.Vector3(
         focusX + Math.sin(angle) * dist,
-        focusY + 55,
+        focusY + 165,
         focusZ + Math.cos(angle) * dist,
       ),
       lookAt: new THREE.Vector3(focusX, focusY + 8, focusZ),

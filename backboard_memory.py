@@ -73,11 +73,22 @@ _CITY_ALIASES = {
 
 
 def _normalize_city(raw: str | None, fallback: str | None = None) -> str | None:
-    if not raw:
+    if raw is None:
         return fallback
-    return _CITY_ALIASES.get(raw.strip().lower(), raw.strip().lower())
+    text = str(raw).strip()
+    if not text:
+        return fallback
+    key = text.lower()
+    return _CITY_ALIASES.get(key, key)
 
 
+def _safe_lower(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    try:
+        return str(value).lower()
+    except Exception:
+        return default
 
 def backboard_configured() -> bool:
     return bool(BACKBOARD_API_KEY)
@@ -98,7 +109,10 @@ async def init_backboard() -> bool:
 
         _client = BackboardClient(api_key=BACKBOARD_API_KEY, timeout=45)
         await ensure_user_thread(HARDCODED_USER_ID)
-        await sync_user_session(HARDCODED_USER_ID, force=True)
+        try:
+            await sync_user_session(HARDCODED_USER_ID, force=True)
+        except Exception as sync_exc:
+            print(f"[backboard] startup sync failed (continuing): {sync_exc}")
         _ready = True
         print("[backboard] ready — persistent memory enabled")
         return True
@@ -258,10 +272,23 @@ async def record_completion(
         print(f"[backboard] record_completion failed: {exc}")
 
 
-def _level_id_from_num(n: int | str) -> str:
-    if isinstance(n, str) and n.startswith("l"):
-        return n
-    return f"l{int(n)}"
+def _level_id_from_num(n: int | str | None) -> str:
+    if n is None:
+        return "l1"
+    if isinstance(n, str):
+        text = n.strip()
+        if not text:
+            return "l1"
+        if text.lower().startswith("l"):
+            return text if text[0] in "lL" else f"l{text}"
+        try:
+            return f"l{int(text)}"
+        except ValueError:
+            return "l1"
+    try:
+        return f"l{int(n)}"
+    except (TypeError, ValueError):
+        return "l1"
 
 
 def _apply_memories_to_tiger(user_id: int, memories: list[Any]) -> dict[str, Any]:
@@ -297,31 +324,52 @@ def _apply_memories_to_tiger(user_id: int, memories: list[Any]) -> dict[str, Any
                 last_by_city[city] = level_id
 
         # Exact template we send on quiz complete
-        for m in _COMPLETION_RE.finditer(content):
+        for m in _COMPLETION_RE.finditer(content or ""):
             city = _normalize_city(m.group("city"))
             if not city:
                 continue
+            topic = m.group("topic")
+            if topic is None:
+                continue
             level_id = _level_id_from_num(m.group("level"))
+            try:
+                score = float(m.group("score"))
+            except (TypeError, ValueError):
+                continue
             _upsert_topic_progress(
-                user_id, city, m.group("topic").strip(), level_id, float(m.group("score")), applied
+                user_id, city, topic.strip(), level_id, score, applied
             )
             last_by_city[city] = level_id
 
         # Backboard Auto consolidated prose
-        for m in _COMPLETED_ITEM_RE.finditer(content):
+        for m in _COMPLETED_ITEM_RE.finditer(content or ""):
             city = _normalize_city(m.group("city"), default_city) or default_city or "ml"
+            topic = m.group("topic")
+            if topic is None:
+                continue
             level_raw = m.group("level") or "1"
             level_id = _level_id_from_num(level_raw)
+            try:
+                score = float(m.group("score"))
+            except (TypeError, ValueError):
+                continue
             _upsert_topic_progress(
-                user_id, city, m.group("topic").strip(), level_id, float(m.group("score")), applied
+                user_id, city, topic.strip(), level_id, score, applied
             )
             last_by_city[city] = level_id
 
-        for m in _COMPLETED_ITEM_LOOSE_RE.finditer(content):
+        for m in _COMPLETED_ITEM_LOOSE_RE.finditer(content or ""):
             city = default_city or "ml"
+            topic = m.group("topic")
+            if topic is None:
+                continue
             level_id = _level_id_from_num(m.group("level"))
+            try:
+                score = float(m.group("score"))
+            except (TypeError, ValueError):
+                continue
             _upsert_topic_progress(
-                user_id, city, m.group("topic").strip(), level_id, float(m.group("score")), applied
+                user_id, city, topic.strip(), level_id, score, applied
             )
             last_by_city[city] = level_id
 
@@ -355,16 +403,22 @@ def _upsert_topic_progress(
     score: float,
     applied: dict[str, Any],
 ) -> None:
-    slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:40]
+    if topic is None or city is None:
+        return
+    topic_text = str(topic).strip()
+    city_text = str(city).strip()
+    if not topic_text or not city_text:
+        return
+    slug = re.sub(r"[^a-z0-9]+", "-", _safe_lower(topic_text)).strip("-")[:40]
     # Prefer real building ids already embedded in topic/title
-    if re.match(r"^[a-z]+-l\d+-s\d+", topic, re.IGNORECASE):
-        building_id = topic
-    elif re.match(r"^[a-z]+-\d+", topic, re.IGNORECASE):
-        building_id = topic
+    if re.match(r"^[a-z]+-l\d+-s\d+", topic_text, re.IGNORECASE):
+        building_id = topic_text
+    elif re.match(r"^[a-z]+-\d+", topic_text, re.IGNORECASE):
+        building_id = topic_text
     else:
-        building_id = f"{city}-{level_id or 'l1'}-mem-{slug}"
+        building_id = f"{city_text}-{level_id or 'l1'}-mem-{slug or 'topic'}"
     try:
-        save_building_quiz(city, building_id, score, user_id=user_id)
+        save_building_quiz(city_text, building_id, score, user_id=user_id)
         applied["topics"] += 1
     except Exception:
         pass
@@ -406,16 +460,16 @@ def _build_tiger_snapshot(user_id: int) -> str:
 
 async def sync_user_session(user_id: int = HARDCODED_USER_ID, *, force: bool = False) -> dict[str, Any]:
     """Fetch Backboard memory for the user and sync into TigerData."""
-    if _client is None:
-        return {"ok": False, "reason": "disabled"}
-    if not force and user_id in _synced_users:
-        return {"ok": True, "skipped": True}
-
-    mapping = await ensure_user_thread(user_id)
-    if not mapping:
-        return {"ok": False, "reason": "no_thread"}
-
     try:
+        if _client is None:
+            return {"ok": False, "reason": "disabled"}
+        if not force and user_id in _synced_users:
+            return {"ok": True, "skipped": True}
+
+        mapping = await ensure_user_thread(user_id)
+        if not mapping:
+            return {"ok": False, "reason": "no_thread"}
+
         memories_resp = await _client.get_memories(
             mapping["assistant_id"], page=1, page_size=100
         )

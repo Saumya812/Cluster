@@ -49,19 +49,34 @@ function makeTextSprite(text, colorHex, { scaleX = 14, scaleY = 3, fontSize = 40
   return sprite
 }
 
-export function growthStatsFromProgress(progressList, totalBuildings) {
+export function growthStatsFromProgress(progressList, totalBuildings, allowedBuildingIds) {
   const rows = progressList || []
-  const completed = rows.filter((r) => (r.quiz_score || 0) > 0).length
-  const scores = rows.filter((r) => (r.quiz_score || 0) > 0).map((r) => r.quiz_score)
+  let filtered = rows
+  if (allowedBuildingIds) {
+    const allow =
+      allowedBuildingIds instanceof Set
+        ? allowedBuildingIds
+        : allowedBuildingIds instanceof Map
+          ? allowedBuildingIds
+          : new Set(allowedBuildingIds)
+    filtered = rows.filter((r) => allow.has(r.building_id))
+  } else {
+    // Drop Backboard/memory-synced IDs that are not real curriculum buildings.
+    filtered = rows.filter((r) => !String(r.building_id || '').includes('-mem-'))
+  }
+  const scored = filtered.filter((r) => (r.quiz_score || 0) > 0)
+  const total = Math.max(0, Number(totalBuildings) || 0)
+  const completed = Math.min(scored.length, total)
+  const scores = scored.map((r) => r.quiz_score)
   const avgScore = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0
-  const pct = totalBuildings > 0 ? completed / totalBuildings : 0
+  const pct = total > 0 ? completed / total : 0
   const height = BASE_GROWTH_H + completed * 1.1 + (avgScore / 100) * 10
   let milestone = 0
   if (pct >= 1) milestone = 100
   else if (pct >= 0.75) milestone = 75
   else if (pct >= 0.5) milestone = 50
   else if (pct >= 0.25) milestone = 25
-  return { completed, totalBuildings, avgScore, pct, height, milestone }
+  return { completed, totalBuildings: total, avgScore, pct, height, milestone }
 }
 
 function milestoneColor(milestone) {
@@ -526,7 +541,7 @@ export function buildEduCity(scene, opts) {
     root.add(mesh)
   }
 
-  const stats = growthStatsFromProgress(progress, topics.length)
+  const stats = growthStatsFromProgress(progress, topics.length, buildingsById)
   const growthColor = milestoneColor(stats.milestone)
   const growthTower = buildTaperedSpire(stats.height, growthColor)
   growthTower.position.set(0, 0, 0)
@@ -662,7 +677,7 @@ export function buildEduCity(scene, opts) {
     applyProgress(list) {
       progressById.clear()
       for (const row of list) progressById.set(row.building_id, row)
-      setGrowthTower(growthStatsFromProgress(list, topics.length), { animate: true })
+      setGrowthTower(growthStatsFromProgress(list, topics.length, buildingsById), { animate: true })
     },
     setGrowthTower,
     updateApproachLabels,

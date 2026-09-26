@@ -38,14 +38,45 @@ _COMPLETION_RE = re.compile(
     r"User completed (?P<topic>.+?) in (?P<city>\w+) Level (?P<level>\d+) with score (?P<score>[\d.]+)%",
     re.IGNORECASE,
 )
+# Backboard Auto often consolidates into: completed 'Topic' in Level 1 with a score of 80%
+_COMPLETED_ITEM_RE = re.compile(
+    r"completed\s+['\"](?P<topic>[^'\"]+)['\"]"
+    r"(?:\s+in\s+(?P<city>ml|ai|programming|web|machine\s+learning))?"
+    r"(?:\s+in\s+Level\s+(?P<level>l?\d+))?"
+    r"\s+with\s+a\s+score\s+of\s+(?P<score>[\d.]+)%",
+    re.IGNORECASE,
+)
+_COMPLETED_ITEM_LOOSE_RE = re.compile(
+    r"['\"](?P<topic>[^'\"]+)['\"]\s+in\s+Level\s+(?P<level>l?\d+)\s+with\s+a\s+score\s+of\s+(?P<score>[\d.]+)%",
+    re.IGNORECASE,
+)
 _LAST_LEVEL_RE = re.compile(
-    r"Last level visited in (?P<city>\w+):\s*(?:Level\s*)?(?P<level>\d+|l\d+)",
+    r"Last level visited(?:\s+in\s+(?P<city>\w+))?\s*[:=]?\s*(?:being\s+)?(?:Level\s*)?(?P<level>l?\d+)",
+    re.IGNORECASE,
+)
+_CITY_PROGRESS_RE = re.compile(
+    r"progress in (?:EduCluster\s+)?['\"]?(?P<city>ml|ai|programming|web|machine learning)['\"]?\s+is\s+(?P<xp>[\d.]+)%",
     re.IGNORECASE,
 )
 _XP_RE = re.compile(
     r"(?:Total XP|progress)\s*[:=]?\s*(?P<xp>[\d.]+)\s*%?",
     re.IGNORECASE,
 )
+
+_CITY_ALIASES = {
+    "machine learning": "ml",
+    "ml": "ml",
+    "ai": "ai",
+    "programming": "programming",
+    "web": "web",
+}
+
+
+def _normalize_city(raw: str | None, fallback: str | None = None) -> str | None:
+    if not raw:
+        return fallback
+    return _CITY_ALIASES.get(raw.strip().lower(), raw.strip().lower())
+
 
 
 def backboard_configured() -> bool:
@@ -237,6 +268,7 @@ def _apply_memories_to_tiger(user_id: int, memories: list[Any]) -> dict[str, Any
     """Parse Backboard memories and upsert into TigerData via progress helpers."""
     applied = {"topics": 0, "prefs": 0, "xp_hint": None}
     last_by_city: dict[str, str] = {}
+    default_city: str | None = None
 
     for mem in memories:
         content = getattr(mem, "content", None) or (
@@ -246,41 +278,60 @@ def _apply_memories_to_tiger(user_id: int, memories: list[Any]) -> dict[str, Any
             mem.get("metadata") if isinstance(mem, dict) else None
         ) or {}
 
-        m = _COMPLETION_RE.search(content)
-        city = None
-        topic = None
-        level_id = None
-        score = None
-        if m:
-            city = m.group("city").lower()
-            topic = m.group("topic").strip()
-            level_id = _level_id_from_num(m.group("level"))
-            score = float(m.group("score"))
-        elif meta.get("city") and meta.get("topic") and meta.get("score") is not None:
-            city = str(meta["city"]).lower()
+        cm = _CITY_PROGRESS_RE.search(content)
+        if cm:
+            default_city = _normalize_city(cm.group("city")) or default_city
+            try:
+                applied["xp_hint"] = float(cm.group("xp"))
+            except ValueError:
+                pass
+
+        # Structured metadata from add_memory (when present)
+        if meta.get("city") and meta.get("topic") and meta.get("score") is not None:
+            city = _normalize_city(str(meta["city"]))
             topic = str(meta["topic"])
             level_id = _level_id_from_num(meta.get("level") or 1)
             score = float(meta["score"])
-
-        if city and topic and score is not None:
-            slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:40]
-            building_id = f"{city}-{level_id or 'l1'}-mem-{slug}"
-            try:
-                save_building_quiz(city, building_id, score, user_id=user_id)
-                applied["topics"] += 1
-            except Exception:
-                pass
-            if level_id:
+            if city:
+                _upsert_topic_progress(user_id, city, topic, level_id, score, applied)
                 last_by_city[city] = level_id
 
-        lm = _LAST_LEVEL_RE.search(content)
-        if lm:
-            city = lm.group("city").lower()
+        # Exact template we send on quiz complete
+        for m in _COMPLETION_RE.finditer(content):
+            city = _normalize_city(m.group("city"))
+            if not city:
+                continue
+            level_id = _level_id_from_num(m.group("level"))
+            _upsert_topic_progress(
+                user_id, city, m.group("topic").strip(), level_id, float(m.group("score")), applied
+            )
+            last_by_city[city] = level_id
+
+        # Backboard Auto consolidated prose
+        for m in _COMPLETED_ITEM_RE.finditer(content):
+            city = _normalize_city(m.group("city"), default_city) or default_city or "ml"
+            level_raw = m.group("level") or "1"
+            level_id = _level_id_from_num(level_raw)
+            _upsert_topic_progress(
+                user_id, city, m.group("topic").strip(), level_id, float(m.group("score")), applied
+            )
+            last_by_city[city] = level_id
+
+        for m in _COMPLETED_ITEM_LOOSE_RE.finditer(content):
+            city = default_city or "ml"
+            level_id = _level_id_from_num(m.group("level"))
+            _upsert_topic_progress(
+                user_id, city, m.group("topic").strip(), level_id, float(m.group("score")), applied
+            )
+            last_by_city[city] = level_id
+
+        for lm in _LAST_LEVEL_RE.finditer(content):
+            city = _normalize_city(lm.group("city"), default_city) or default_city or "ml"
             raw = lm.group("level")
             last_by_city[city] = raw if str(raw).startswith("l") else _level_id_from_num(raw)
 
         xp = _XP_RE.search(content)
-        if xp:
+        if xp and applied["xp_hint"] is None:
             try:
                 applied["xp_hint"] = float(xp.group("xp"))
             except ValueError:
@@ -294,6 +345,30 @@ def _apply_memories_to_tiger(user_id: int, memories: list[Any]) -> dict[str, Any
             pass
 
     return applied
+
+
+def _upsert_topic_progress(
+    user_id: int,
+    city: str,
+    topic: str,
+    level_id: str,
+    score: float,
+    applied: dict[str, Any],
+) -> None:
+    slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:40]
+    # Prefer real building ids already embedded in topic/title
+    if re.match(r"^[a-z]+-l\d+-s\d+", topic, re.IGNORECASE):
+        building_id = topic
+    elif re.match(r"^[a-z]+-\d+", topic, re.IGNORECASE):
+        building_id = topic
+    else:
+        building_id = f"{city}-{level_id or 'l1'}-mem-{slug}"
+    try:
+        save_building_quiz(city, building_id, score, user_id=user_id)
+        applied["topics"] += 1
+    except Exception:
+        pass
+
 
 
 def _build_tiger_snapshot(user_id: int) -> str:

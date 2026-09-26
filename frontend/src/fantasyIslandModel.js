@@ -8,7 +8,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 const ISLAND_URL = '/assets/fantasy_mystical_island.glb'
-const MAX_TEXTURE_SIZE = 256
+const MAX_TEXTURE_SIZE = 1024
 
 /** @type {THREE.Object3D | null} */
 let template = null
@@ -32,6 +32,7 @@ function downsampleTexture(tex, maxSize = MAX_TEXTURE_SIZE) {
   canvas.height = ch
   const ctx = canvas.getContext('2d')
   if (!ctx) return
+  ctx.imageSmoothingQuality = 'high'
   ctx.drawImage(img, 0, 0, cw, ch)
   tex.image = canvas
   tex.needsUpdate = true
@@ -50,7 +51,10 @@ function simplifyMaterial(src) {
     side: THREE.FrontSide,
     fog: true,
   })
-  if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace
+  if (mat.map) {
+    mat.map.colorSpace = THREE.SRGBColorSpace
+    mat.map.anisotropy = 8
+  }
   return mat
 }
 

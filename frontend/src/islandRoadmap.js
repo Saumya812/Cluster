@@ -74,39 +74,40 @@ function desaturateHex(hex, amount = 0.45) {
 
 /** Clean white text on a dark pill — no colored borders. */
 function makeLabel(text, { scaleX = 14, scaleY = 2.6, fontSize = 30 } = {}) {
+  const RES = 2.5
+  const px = Math.round(fontSize * RES)
+  const font = `700 ${px}px Sora, system-ui, sans-serif`
+  const measureCtx = document.createElement('canvas').getContext('2d')
+  measureCtx.font = font
+  const padX = px * 0.9
+  const padY = px * 0.45
+  const tw = Math.ceil(measureCtx.measureText(text).width + padX * 2)
+  const th = Math.ceil(px + padY * 2)
+
   const canvas = document.createElement('canvas')
-  canvas.width = 1024
-  canvas.height = 192
+  canvas.width = tw
+  canvas.height = th
   const ctx = canvas.getContext('2d')
-  ctx.clearRect(0, 0, 1024, 192)
-
-  ctx.font = `700 ${fontSize}px Sora, system-ui, sans-serif`
-  const metrics = ctx.measureText(text)
-  const padX = 36
-  const padY = 18
-  const tw = Math.min(metrics.width + padX * 2, 980)
-  const th = fontSize + padY * 2
-  const rx = (1024 - tw) / 2
-  const ry = (192 - th) / 2
-  const r = th / 2
-
   ctx.fillStyle = 'rgba(12, 14, 22, 0.88)'
   ctx.beginPath()
-  ctx.moveTo(rx + r, ry)
-  ctx.arcTo(rx + tw, ry, rx + tw, ry + th, r)
-  ctx.arcTo(rx + tw, ry + th, rx, ry + th, r)
-  ctx.arcTo(rx, ry + th, rx, ry, r)
-  ctx.arcTo(rx, ry, rx + tw, ry, r)
-  ctx.closePath()
+  ctx.roundRect(0, 0, tw, th, th / 2)
   ctx.fill()
 
+  ctx.font = font
   ctx.fillStyle = '#ffffff'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(text, 512, 96)
+  ctx.fillText(text, tw / 2, th / 2 + px * 0.04)
 
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 4
+  let worldH = scaleY * 0.5
+  let worldW = worldH * (tw / th)
+  if (worldW > scaleX * 1.3) {
+    worldH *= (scaleX * 1.3) / worldW
+    worldW = scaleX * 1.3
+  }
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: tex,
@@ -115,7 +116,7 @@ function makeLabel(text, { scaleX = 14, scaleY = 2.6, fontSize = 30 } = {}) {
       depthTest: false,
     }),
   )
-  sprite.scale.set(scaleX, scaleY, 1)
+  sprite.scale.set(worldW, worldH, 1)
   sprite.renderOrder = 20
   return sprite
 }

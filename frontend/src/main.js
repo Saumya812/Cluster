@@ -139,7 +139,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap
 app.appendChild(renderer.domElement)
 
 const CITY_PIXEL_RATIO = Math.min(window.devicePixelRatio, 2)
-const ROADMAP_PIXEL_RATIO = 1
+const ROADMAP_PIXEL_RATIO = Math.min(window.devicePixelRatio, 2)
 
 // Dark ground plane(s) so buildings sit on something instead of appearing
 // to float in pure void. Slightly bluer/darker than the buildings' own
@@ -345,9 +345,11 @@ composer.addPass(bloomPass)
 composer.addPass(new OutputPass())
 
 function setRoadmapRenderBudget(enabled) {
-  // Roadmap: cap DPR, kill shadow maps + bloom — GLB islands dominate GPU cost.
-  renderer.setPixelRatio(enabled ? ROADMAP_PIXEL_RATIO : CITY_PIXEL_RATIO)
+  // Roadmap: kill shadow maps + bloom — GLB islands dominate GPU cost.
+  const dpr = enabled ? ROADMAP_PIXEL_RATIO : CITY_PIXEL_RATIO
+  renderer.setPixelRatio(dpr)
   renderer.setSize(window.innerWidth, window.innerHeight)
+  composer.setPixelRatio(dpr)
   composer.setSize(window.innerWidth, window.innerHeight)
   bloomPass.resolution.set(window.innerWidth, window.innerHeight)
   renderer.shadowMap.enabled = !enabled
@@ -372,6 +374,7 @@ window.addEventListener('resize', () => {
   const dpr = appMode === 'roadmap' || appMode === 'globe' ? ROADMAP_PIXEL_RATIO : CITY_PIXEL_RATIO
   renderer.setPixelRatio(dpr)
   renderer.setSize(window.innerWidth, window.innerHeight)
+  composer.setPixelRatio(dpr)
   composer.setSize(window.innerWidth, window.innerHeight)
   bloomPass.resolution.set(window.innerWidth, window.innerHeight)
 })
@@ -1348,6 +1351,12 @@ async function loadLevelCity(cityId, level) {
   if (islandRoadmap) islandRoadmap.hide()
   disposeMlCity()
 
+  try {
+    await document.fonts?.load('700 64px "Bebas Neue"')
+  } catch {
+    /* canvas falls back to Sora */
+  }
+
   mlCity = buildEduCity(scene, {
     cityId,
     cityLabel: cityLabel + ' · ' + levelLabel,
@@ -1488,6 +1497,10 @@ const DISTRICT_ACCENTS = {
 }
 
 const nearPrompt = document.getElementById('near-prompt')
+let targetBuildingId = null
+const aimRaycaster = new THREE.Raycaster()
+aimRaycaster.far = 150
+const SCREEN_CENTER = new THREE.Vector2(0, 0)
 const cityRaycaster = new THREE.Raycaster()
 const cityPointer = new THREE.Vector2()
 
@@ -1836,14 +1849,15 @@ window.addEventListener('pointerup', onRoadmapPointerUp)
 window.addEventListener('pointercancel', onRoadmapPointerUp)
 window.addEventListener('wheel', onRoadmapWheel, { passive: false })
 
-// Click-to-learn while flying: raycast center on KeyE
+// E opens whatever the near-prompt is showing (crosshair target, else nearest building).
 document.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyE') return
+  if (event.code !== 'KeyE' || event.repeat) return
+  if (event.target?.closest?.('input, textarea, [contenteditable="true"]')) return
   if (appMode !== 'ml' || topicPanel?.isOpen || buildingSidePanel?.isOpen) return
-  cityRaycaster.setFromCamera(new THREE.Vector2(0, 0), camera)
-  const hits = cityRaycaster.intersectObjects(mlCity?.clickables || [], false)
-  const hit = hits[0]?.object
-  if (hit?.userData?.buildingId) openBuildingTopic(hit.userData.buildingId)
+  if (targetBuildingId) {
+    event.preventDefault()
+    openBuildingTopic(targetBuildingId)
+  }
 })
 
 setCityUiVisible(false)
@@ -1895,9 +1909,14 @@ function animate() {
 
     if (mlCity && !topicPanel?.isOpen && !buildingSidePanel?.isOpen) {
       const near = mlCity.updateApproachLabels(camera.position)
-      if (near) {
+      aimRaycaster.setFromCamera(SCREEN_CENTER, camera)
+      const aimedId = aimRaycaster.intersectObjects(mlCity.clickables || [], false)[0]?.object
+        ?.userData?.buildingId
+      targetBuildingId = aimedId || near?.id || null
+      const target = targetBuildingId && mlCity.buildingsById?.get(targetBuildingId)
+      if (target) {
         nearPrompt.hidden = false
-        nearPrompt.innerHTML = `<strong>${near.building.name}</strong> · ${near.street.name} — press <kbd>E</kbd> or click to learn`
+        nearPrompt.innerHTML = `<strong>${target.building.name}</strong> · ${target.street.name} — press <kbd>E</kbd> or click to learn`
       } else {
         nearPrompt.hidden = true
       }

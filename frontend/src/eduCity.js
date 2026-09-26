@@ -26,25 +26,70 @@ function mulberry32(seed) {
   }
 }
 
-function makeTextSprite(text, colorHex, { scaleX = 14, scaleY = 3, fontSize = 40 } = {}) {
+/**
+ * Canvas is sized to the measured text (never clipped) and drawn at 2× for
+ * crisp edges. `scaleY` is world height per line; `scaleX * 2` caps width.
+ * Use '\n' for multi-line; `lineColors` overrides colour per line.
+ */
+function makeTextSprite(
+  text,
+  colorHex,
+  { scaleX = 14, scaleY = 3, fontSize = 40, lineColors = null, glow = false } = {},
+) {
+  const RES = 2
+  const lines = String(text).split('\n')
+  const px = fontSize * RES
+  const font = `700 ${px}px "Bebas Neue", Sora, sans-serif`
+  const measureCtx = document.createElement('canvas').getContext('2d')
+  measureCtx.font = font
+  const textW = Math.max(...lines.map((l) => measureCtx.measureText(l).width))
+  const padX = px * 0.7
+  const lineH = px * 1.15
+  const padY = px * 0.4
+  const w = Math.ceil(textW + padX * 2)
+  const h = Math.ceil(lineH * lines.length + padY * 2)
+
   const canvas = document.createElement('canvas')
-  canvas.width = 640
-  canvas.height = 128
+  canvas.width = w
+  canvas.height = h
   const ctx = canvas.getContext('2d')
-  ctx.clearRect(0, 0, 640, 128)
-  ctx.fillStyle = 'rgba(5, 8, 20, 0.75)'
-  ctx.fillRect(20, 24, 600, 80)
-  ctx.font = `700 ${fontSize}px Bebas Neue, Sora, sans-serif`
+  const r = Math.min(h / 2, px * 0.6)
+  ctx.fillStyle = 'rgba(5, 8, 20, 0.8)'
+  ctx.beginPath()
+  ctx.roundRect(RES, RES, w - RES * 2, h - RES * 2, r)
+  ctx.fill()
+  ctx.lineWidth = RES * 1.5
+  ctx.strokeStyle = colorHex
+  ctx.globalAlpha = 0.55
+  ctx.stroke()
+  ctx.globalAlpha = 1
+
+  ctx.font = font
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillStyle = colorHex
-  ctx.fillText(text, 320, 64)
+  if (glow) {
+    ctx.shadowColor = colorHex
+    ctx.shadowBlur = px * 0.35
+  }
+  lines.forEach((line, i) => {
+    ctx.fillStyle = lineColors?.[i] || colorHex
+    ctx.fillText(line, w / 2, padY + lineH * (i + 0.5))
+  })
+
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 4
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
   )
-  sprite.scale.set(scaleX, scaleY, 1)
+  let worldH = scaleY * lines.length
+  let worldW = worldH * (w / h)
+  const maxW = scaleX * 2
+  if (worldW > maxW) {
+    worldH *= maxW / worldW
+    worldW = maxW
+  }
+  sprite.scale.set(worldW, worldH, 1)
   sprite.renderOrder = 5
   return sprite
 }
@@ -429,6 +474,217 @@ function addStreetLife(root, {
         if (car.along < car.lane.min) car.along = car.lane.max
       }
       syncCars()
+    },
+  }
+}
+
+function makePortalTexture(accent) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 256
+  const ctx = canvas.getContext('2d')
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, 64, 256)
+  const grad = ctx.createLinearGradient(0, 0, 0, 256)
+  grad.addColorStop(0, 'rgba(0,0,0,0)')
+  grad.addColorStop(0.5, accent)
+  grad.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.globalAlpha = 0.55
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, 64, 256)
+  ctx.globalAlpha = 0.8
+  ctx.fillStyle = '#ffffff'
+  for (let y = 0; y < 256; y += 32) ctx.fillRect(0, y, 64, 2)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  return tex
+}
+
+/**
+ * Neon portal arch at the city entrance with a self-sizing title sign.
+ * Returns { group, update(time, delta) }.
+ */
+function buildTitleGate(accent, title) {
+  const group = new THREE.Group()
+  group.name = 'titleGate'
+  const accentCol = new THREE.Color(accent)
+  const warmCol = new THREE.Color('#ffb86b')
+  const SPAN = 20
+  const PLINTH_H = 2.4
+  const PILLAR_H = 26
+  const topY = PLINTH_H + PILLAR_H
+
+  const metal = new THREE.MeshStandardMaterial({ color: 0x151a28, roughness: 0.35, metalness: 0.8 })
+  const neon = new THREE.MeshStandardMaterial({
+    color: accentCol,
+    emissive: accentCol,
+    emissiveIntensity: 1.6,
+    roughness: 0.3,
+  })
+  const neonWarm = new THREE.MeshStandardMaterial({
+    color: warmCol,
+    emissive: warmCol,
+    emissiveIntensity: 1.4,
+    roughness: 0.3,
+  })
+
+  const spinners = []
+  const bobbers = []
+
+  for (const side of [-1, 1]) {
+    const x = side * SPAN
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.6, 1.2, 6), metal)
+    base.position.set(x, 0.6, 0)
+    const step = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.6, 1.2, 6), metal)
+    step.position.set(x, 1.8, 0)
+    const baseGlow = new THREE.Mesh(new THREE.TorusGeometry(4.0, 0.14, 6, 6), neon)
+    baseGlow.rotation.x = Math.PI / 2
+    baseGlow.position.set(x, 1.22, 0)
+    const column = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.2, PILLAR_H, 6), metal)
+    column.position.set(x, PLINTH_H + PILLAR_H / 2, 0)
+    group.add(base, step, baseGlow, column)
+
+    for (let k = 0; k < 4; k++) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(2.9 - k * 0.15, 0.14, 8, 32),
+        k % 2 ? neonWarm : neon,
+      )
+      ring.rotation.x = Math.PI / 2
+      const baseY = PLINTH_H + 4 + k * 5.5
+      ring.position.set(x, baseY, 0)
+      group.add(ring)
+      bobbers.push({ mesh: ring, baseY, phase: k * 0.8 + side })
+    }
+
+    const cap = new THREE.Mesh(new THREE.OctahedronGeometry(1.8, 0), neon)
+    const capY = topY + 2.8
+    cap.position.set(x, capY, 0)
+    group.add(cap)
+    spinners.push({ mesh: cap, speed: 0.9 * side })
+    bobbers.push({ mesh: cap, baseY: capY, phase: side * 1.7 })
+  }
+
+  // Arch layers: dark backing, main neon tube, warm outer trim, thin inner line
+  const backing = new THREE.Mesh(new THREE.TorusGeometry(SPAN, 1.8, 10, 72, Math.PI), metal)
+  backing.position.set(0, topY, -0.9)
+  const arch = new THREE.Mesh(new THREE.TorusGeometry(SPAN, 1.1, 12, 72, Math.PI), neon)
+  arch.position.y = topY
+  const archOuter = new THREE.Mesh(new THREE.TorusGeometry(SPAN + 2.4, 0.32, 8, 72, Math.PI), neonWarm)
+  archOuter.position.y = topY
+  const archInner = new THREE.Mesh(new THREE.TorusGeometry(SPAN - 2.2, 0.2, 8, 72, Math.PI), neon)
+  archInner.position.y = topY
+  group.add(backing, arch, archOuter, archInner)
+
+  const keyY = topY + SPAN + 4.5
+  const keystone = new THREE.Mesh(new THREE.OctahedronGeometry(3.2, 0), neonWarm)
+  keystone.position.y = keyY
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(4.8, 0.16, 8, 48), neon)
+  halo.position.y = keyY
+  group.add(keystone, halo)
+  spinners.push({ mesh: keystone, speed: 0.6 })
+  bobbers.push({ mesh: keystone, baseY: keyY, phase: 0 })
+  bobbers.push({ mesh: halo, baseY: keyY, phase: 0 })
+
+  // Portal membrane filling the arch opening
+  const inner = SPAN - 2.4
+  const shape = new THREE.Shape()
+  shape.moveTo(-inner, 0.2)
+  shape.lineTo(-inner, topY)
+  shape.absarc(0, topY, inner, Math.PI, 0, true)
+  shape.lineTo(inner, 0.2)
+  shape.closePath()
+  const portalTex = makePortalTexture(accent)
+  portalTex.repeat.set(1 / (inner * 2), 1 / 14)
+  const portalMat = new THREE.MeshBasicMaterial({
+    map: portalTex,
+    transparent: true,
+    opacity: 0.5,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  })
+  const portal = new THREE.Mesh(new THREE.ShapeGeometry(shape, 32), portalMat)
+  group.add(portal)
+
+  // Rising sparks inside the arch
+  const SPARKS = 160
+  const sparkPos = new Float32Array(SPARKS * 3)
+  const sparkSpeed = new Float32Array(SPARKS)
+  const maxSparkY = topY + inner
+  for (let i = 0; i < SPARKS; i++) {
+    sparkPos[i * 3] = (Math.random() - 0.5) * inner * 2
+    sparkPos[i * 3 + 1] = Math.random() * maxSparkY
+    sparkPos[i * 3 + 2] = (Math.random() - 0.5) * 4
+    sparkSpeed[i] = 2 + Math.random() * 5
+  }
+  const sparkGeo = new THREE.BufferGeometry()
+  sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3))
+  const sparks = new THREE.Points(
+    sparkGeo,
+    new THREE.PointsMaterial({
+      color: accentCol,
+      size: 0.55,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  )
+  group.add(sparks)
+
+  // Threshold strip + chevrons pointing into the city
+  const threshold = new THREE.Mesh(new THREE.BoxGeometry(SPAN * 2, 0.12, 1.2), neon)
+  threshold.position.y = 0.08
+  group.add(threshold)
+  const chevronMats = []
+  for (let c = 0; c < 3; c++) {
+    const mat = new THREE.MeshBasicMaterial({ color: warmCol, transparent: true, opacity: 0.6 })
+    chevronMats.push(mat)
+    const cz = 9 + c * 6
+    for (const side of [-1, 1]) {
+      const armMesh = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.08, 5), mat)
+      armMesh.rotation.y = side * 0.65
+      armMesh.position.set(side * 1.6, 0.06, cz)
+      group.add(armMesh)
+    }
+  }
+
+  const gateLight = new THREE.PointLight(accentCol, 2.2, 70, 1.6)
+  gateLight.position.set(0, topY * 0.6, 4)
+  group.add(gateLight)
+
+  const lines = title.split(' · ')
+  const sign = makeTextSprite(lines.join('\n'), accent, {
+    scaleX: 40,
+    scaleY: 8.5,
+    fontSize: 64,
+    lineColors: [accent, '#ffd08a'],
+    glow: true,
+  })
+  sign.position.y = keyY + 13 + (lines.length - 1) * 4.2
+  group.add(sign)
+
+  return {
+    group,
+    topY,
+    signY: sign.position.y,
+    update(time, delta) {
+      for (const s of spinners) s.mesh.rotation.y += s.speed * delta
+      for (const b of bobbers) b.mesh.position.y = b.baseY + Math.sin(time * 1.6 + b.phase) * 0.5
+      halo.rotation.x = Math.sin(time * 0.7) * 0.5
+      portalTex.offset.y -= delta * 0.08
+      portalMat.opacity = 0.42 + Math.sin(time * 2) * 0.1
+      neon.emissiveIntensity = 1.45 + Math.sin(time * 2.4) * 0.25
+      chevronMats.forEach((m, i) => {
+        m.opacity = 0.25 + 0.65 * (0.5 + 0.5 * Math.sin(time * 4 - i * 1.3))
+      })
+      for (let i = 0; i < SPARKS; i++) {
+        let y = sparkPos[i * 3 + 1] + sparkSpeed[i] * delta
+        if (y > maxSparkY) y = 0
+        sparkPos[i * 3 + 1] = y
+      }
+      sparkGeo.attributes.position.needsUpdate = true
     },
   }
 }
@@ -859,31 +1115,10 @@ export function buildEduCity(scene, opts) {
   growthLabel.position.set(0, stats.height + 8, 0)
   root.add(growthLabel)
 
-  const cityBanner = makeTextSprite(cityLabel.toUpperCase(), accent, {
-    scaleX: 48,
-    scaleY: 9,
-    fontSize: 64,
-  })
   const titleZ = cityHalfZ + 18
-  cityBanner.position.set(0, 42, titleZ)
-  root.add(cityBanner)
-
-  // Welcome gate under the title so the entrance reads clearly
-  const gateMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(accent),
-    emissive: new THREE.Color(accent),
-    emissiveIntensity: 0.85,
-    roughness: 0.35,
-    metalness: 0.4,
-  })
-  for (const gx of [-18, 18]) {
-    const pillar = new THREE.Mesh(new THREE.BoxGeometry(2.2, 22, 2.2), gateMat)
-    pillar.position.set(gx, 11, titleZ - 6)
-    root.add(pillar)
-  }
-  const lintel = new THREE.Mesh(new THREE.BoxGeometry(40, 2.4, 2.4), gateMat)
-  lintel.position.set(0, 23, titleZ - 6)
-  root.add(lintel)
+  const gate = buildTitleGate(accent, cityLabel.toUpperCase())
+  gate.group.position.set(0, 0, titleZ - 6)
+  root.add(gate.group)
 
   // Entry boulevard + landscaping visible from the title spawn
   const entryRoad = new THREE.Mesh(
@@ -895,7 +1130,7 @@ export function buildEduCity(scene, opts) {
   root.add(entryRoad)
   for (const side of [-1, 1]) {
     for (let i = 0; i < 8; i++) {
-      const tz = titleZ - 8 - i * 7
+      const tz = titleZ - 18 - i * 7
       const tx = side * (ROAD_W * 0.55 + 4)
       const trunk = new THREE.Mesh(
         new THREE.CylinderGeometry(0.4, 0.55, 3.4, 6),
@@ -938,8 +1173,8 @@ export function buildEduCity(scene, opts) {
 
   // Start outside the city looking at the title gate — not at the Growth Tower.
   const spawnPose = {
-    position: new THREE.Vector3(0, 38, titleZ + 95),
-    lookAt: new THREE.Vector3(0, 28, titleZ - 2),
+    position: new THREE.Vector3(0, 34, titleZ + 115),
+    lookAt: new THREE.Vector3(0, 36, titleZ - 6),
   }
 
   let park = null
@@ -1064,6 +1299,7 @@ export function buildEduCity(scene, opts) {
     update(time, delta) {
       park?.update(time, delta)
       streetLife?.update(delta)
+      gate.update(time, delta)
       if (waterfallFx?.waterMats) {
         for (const mat of waterfallFx.waterMats) {
           if (mat.map) {

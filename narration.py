@@ -26,10 +26,26 @@ else:
 
 
 _warned_statuses: set[int] = set()
+_last_error: str | None = None
 
 
 def narration_configured() -> bool:
     return bool(ELEVENLABS_API_KEY)
+
+
+def narration_last_error() -> str | None:
+    """Most recent ElevenLabs failure, e.g. "401 invalid_api_key"; None after a success."""
+    return _last_error
+
+
+def _error_reason(resp: httpx.Response) -> str:
+    try:
+        detail = resp.json().get("detail")
+    except ValueError:
+        return ""
+    if isinstance(detail, dict):
+        return str(detail.get("status") or detail.get("code") or "")
+    return ""
 
 
 def _cache_path(text: str) -> Path:
@@ -64,22 +80,25 @@ async def synthesize_speech(text: str) -> bytes | None:
         "Accept": "audio/mpeg",
         "Content-Type": "application/json",
     }
+    global _last_error
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(ELEVENLABS_URL, headers=headers, json=payload)
             if resp.status_code != 200:
+                _last_error = f"{resp.status_code} {_error_reason(resp)}".strip()
                 if resp.status_code not in _warned_statuses:
                     _warned_statuses.add(resp.status_code)
-                    hint = " (check ELEVENLABS_API_KEY)" if resp.status_code == 401 else ""
-                    print(f"[narration] ElevenLabs returned HTTP {resp.status_code}{hint}")
+                    print(f"[narration] ElevenLabs returned HTTP {_last_error}")
                 return None
             audio = resp.content
             if not audio:
                 return None
+            _last_error = None
             try:
                 path.write_bytes(audio)
             except OSError:
                 pass
             return audio
-    except Exception:
+    except Exception as exc:
+        _last_error = type(exc).__name__
         return None

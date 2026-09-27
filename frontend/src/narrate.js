@@ -1,22 +1,10 @@
 /**
  * Fire-and-forget ElevenLabs narration via /api/narrate.
- * Falls back to the browser's built-in voice if the server has no audio.
  * Failures are silent — never block UI.
  */
 
 let audioCtx = null
 let currentSource = null
-
-function speakWithBrowser(line) {
-  const synth = window.speechSynthesis
-  if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return
-  try {
-    synth.cancel()
-    synth.speak(new SpeechSynthesisUtterance(line))
-  } catch {
-    /* ignore */
-  }
-}
 
 function getAudioContext() {
   if (audioCtx) return audioCtx
@@ -41,11 +29,9 @@ export function narrate(text) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: line }),
       })
-      const buf = res.ok ? await res.arrayBuffer() : null
-      if (!buf || buf.byteLength < 32) {
-        speakWithBrowser(line)
-        return
-      }
+      if (!res.ok) return
+      const buf = await res.arrayBuffer()
+      if (!buf || buf.byteLength < 32) return
 
       const ctx = getAudioContext()
       if (!ctx) return

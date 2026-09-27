@@ -53,7 +53,7 @@ from progress import (
 from level_curriculum import building_id_for, get_city_levels, get_level
 from quiz_bank import bank_quiz_for_building
 from youtube_search import search_playlists, search_playlist, search_videos, youtube_configured
-from narration import narration_configured, synthesize_speech
+from narration import narration_configured, narration_last_error, synthesize_speech
 from learner_db import ensure_backend, using_tiger
 from backboard_memory import (
     close_backboard,
@@ -415,6 +415,7 @@ async def health() -> dict:
         "gemini": gemini_configured(),
         "youtube": youtube_configured(),
         "elevenlabs": narration_configured(),
+        "elevenlabs_error": narration_last_error(),
         "districts": len(district_catalog),
         "topics": {cid: topic_count(cid) for cid in CITY_META},
     }

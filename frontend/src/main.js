@@ -1808,7 +1808,6 @@ let activeCityId = 'ml'
 let activeLevel = null
 let appMode = 'globe' // 'globe' | 'picker' | 'roadmap' | 'ml'
 let mlCityLoaded = false
-let escArmedForBack = false
 let roadmapSelecting = false
 
 const DISTRICT_ACCENTS = {
@@ -1857,10 +1856,7 @@ buildingSidePanel = createBuildingSidePanel({
     }
   },
   onClose() {
-    if (appMode === 'ml') {
-      showTakeoffOverlay({ paused: true })
-      escArmedForBack = true
-    }
+    if (appMode === 'ml') showTakeoffOverlay({ paused: true })
   },
 })
 
@@ -1891,10 +1887,7 @@ topicPanel = createTopicPanel({
     return data
   },
   onClose() {
-    if (appMode === 'ml') {
-      showTakeoffOverlay({ paused: true })
-      escArmedForBack = true
-    }
+    if (appMode === 'ml') showTakeoffOverlay({ paused: true })
   },
 })
 
@@ -1952,7 +1945,6 @@ function enterCityRoadmap(cityId) {
   loadIslandRoadmap(cityId)
     .then(() => {
       mlCityLoaded = false
-      escArmedForBack = true
     })
     .catch((err) => {
       console.error(err)
@@ -1989,7 +1981,6 @@ async function enterLevelFromRoadmap(level) {
     loadingOverlay.classList.remove('hidden')
     await loadLevelCity(activeCityId, level)
     cityFlightStarted = false
-    escArmedForBack = false
   } catch (err) {
     console.error(err)
     appMode = 'roadmap'
@@ -2026,7 +2017,6 @@ async function returnToRoadmap() {
       await animateCameraTo(camera, overview, 900)
       enableRoadmapCamera(overview.target || overview.lookAt)
     }
-    escArmedForBack = true
   } catch (err) {
     console.error(err)
     showDistrictPicker()
@@ -2048,7 +2038,6 @@ function returnToPicker() {
   nearPrompt.hidden = true
   hideFlightOverlays()
   cityFlightStarted = false
-  escArmedForBack = false
   activeLevel = null
   showDistrictPicker()
 }
@@ -2069,7 +2058,6 @@ function returnToGlobe() {
   nearPrompt.hidden = true
   hideFlightOverlays()
   cityFlightStarted = false
-  escArmedForBack = false
   activeLevel = null
   document.body.dataset.appMode = 'globe'
   bootGlobe()
@@ -2109,18 +2097,8 @@ function bootGlobe() {
   loadingOverlay.classList.add('hidden')
 }
 
-controls.addEventListener('unlock', () => {
-  if (appMode === 'ml' && !topicPanel?.isOpen && !buildingSidePanel?.isOpen) {
-    escArmedForBack = true
-  }
-})
-
-controls.addEventListener('lock', () => {
-  escArmedForBack = false
-})
-
 document.addEventListener('keydown', (event) => {
-  if (event.code !== 'Escape') return
+  if (event.code !== 'Escape' || event.repeat) return
 
   if (appMode === 'picker') {
     returnToGlobe()
@@ -2148,14 +2126,9 @@ document.addEventListener('keydown', (event) => {
     return
   }
 
+  // Leaving the city is only via the Back to Islands button, so Esc can't bounce you out mid-flight.
   if (controls.isLocked) {
     controls.unlock()
-    event.preventDefault()
-    return
-  }
-
-  if (escArmedForBack) {
-    returnToRoadmap()
     event.preventDefault()
   }
 })

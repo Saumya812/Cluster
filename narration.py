@@ -25,6 +25,9 @@ else:
     CACHE_DIR = _TMP
 
 
+_warned_statuses: set[int] = set()
+
+
 def narration_configured() -> bool:
     return bool(ELEVENLABS_API_KEY)
 
@@ -65,6 +68,10 @@ async def synthesize_speech(text: str) -> bytes | None:
         async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(ELEVENLABS_URL, headers=headers, json=payload)
             if resp.status_code != 200:
+                if resp.status_code not in _warned_statuses:
+                    _warned_statuses.add(resp.status_code)
+                    hint = " (check ELEVENLABS_API_KEY)" if resp.status_code == 401 else ""
+                    print(f"[narration] ElevenLabs returned HTTP {resp.status_code}{hint}")
                 return None
             audio = resp.content
             if not audio:

@@ -2,3 +2,4 @@
 venv/
 city.db
 __pycache__/
+*.log

@@ -831,6 +831,63 @@ function buildTaperedSpire(height, color) {
  * @param {THREE.Scene} scene
  * @param {{ cityId: string, cityLabel: string, streets: string[], topics: object[], accent: string, progress?: object[] }} opts
  */
+const TOPIC_DONE_COLOR = 0x34d399
+const TOPIC_BEAM_H = 160
+
+/** Ground ring, rooftop crown and sky beam so a topic building reads from anywhere. */
+function addTopicBeacon(root, x, z, height, footprint, accent, id, done) {
+  const group = new THREE.Group()
+  group.position.set(x, 0, z)
+  root.add(group)
+
+  const additive = (opacity) =>
+    new THREE.MeshBasicMaterial({
+      color: accent,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false,
+    })
+
+  const ringMat = additive(0.85)
+  const ring = new THREE.Mesh(new THREE.RingGeometry(footprint * 0.95, footprint * 1.3, 48), ringMat)
+  ring.rotation.x = -Math.PI / 2
+  ring.position.y = 0.08
+  group.add(ring)
+
+  const crownMat = new THREE.MeshBasicMaterial({ color: accent, fog: false })
+  const crown = new THREE.Mesh(new THREE.TorusGeometry(footprint * 0.62, 0.35, 8, 40), crownMat)
+  crown.rotation.x = Math.PI / 2
+  crown.position.y = height + 0.6
+  group.add(crown)
+
+  const beamMat = additive(0.3)
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.1, 1.6, TOPIC_BEAM_H, 16, 1, true),
+    beamMat,
+  )
+  beam.position.y = height + TOPIC_BEAM_H / 2
+  group.add(beam)
+
+  const mats = [ringMat, crownMat, beamMat]
+  const setDone = (isDone) => {
+    for (const m of mats) m.color.set(isDone ? TOPIC_DONE_COLOR : accent)
+  }
+  setDone(done)
+
+  const phase = (x * 0.13 + z * 0.07) % (Math.PI * 2)
+  return {
+    id,
+    setDone,
+    update(time) {
+      const pulse = 0.5 + 0.5 * Math.sin(time * 2.2 + phase)
+      beamMat.opacity = 0.2 + pulse * 0.2
+      ringMat.opacity = 0.55 + pulse * 0.35
+    },
+  }
+}
+
 export function buildEduCity(scene, opts) {
   const {
     cityId,
@@ -912,7 +969,13 @@ export function buildEduCity(scene, opts) {
   const avenueXs = [-lotsPerSide * 0.5 * CELL, lotsPerSide * 0.5 * CELL]
   const occupied = new Set()
   const fillers = []
+  const fillerJobs = []
   const topicMarkers = []
+  const topicSpots = []
+  const beacons = []
+  // Small (level) cities: topic buildings become tall landmarks with beams + signs.
+  const landmarkTopics = topics.length <= 12
+  const topicFootprint = landmarkTopics ? FOOTPRINT * 1.4 : FOOTPRINT
 
   function lotKey(x, z) {
     return `${Math.round(x)},${Math.round(z)}`
@@ -986,7 +1049,9 @@ export function buildEduCity(scene, opts) {
       }
 
       const subCount = Math.max(topic.subtopicCount || topic.subtopics?.length || 3, 2)
-      const height = 12 + subCount * 7 + rng() * 8
+      const height = landmarkTopics
+        ? MAX_H + 10 + rng() * 12
+        : 12 + subCount * 7 + rng() * 8
       const mat = new THREE.MeshStandardMaterial({
         map: colorTexture,
         emissiveMap: emissiveTexture,
@@ -998,7 +1063,7 @@ export function buildEduCity(scene, opts) {
       })
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat)
       mesh.position.set(px, height / 2, topicRowZ)
-      mesh.scale.set(FOOTPRINT, height, FOOTPRINT)
+      mesh.scale.set(topicFootprint, height, topicFootprint)
       mesh.userData = {
         kind: 'topicBuilding',
         buildingId: topic.id,
@@ -1010,15 +1075,30 @@ export function buildEduCity(scene, opts) {
       root.add(mesh)
       clickables.push(mesh)
       occupied.add(lotKey(px, topicRowZ))
+      topicSpots.push({ x: px, z: topicRowZ })
 
-      const nameSprite = makeTextSprite(topic.name, '#e8eef8', {
-        scaleX: 22,
-        scaleY: 4.6,
-        fontSize: 40,
-      })
-      nameSprite.position.set(px, height + 6, topicRowZ)
-      nameSprite.visible = false
+      const topicNumber = topics.indexOf(topic) + 1
+      const nameSprite = landmarkTopics
+        ? makeTextSprite(`TOPIC ${topicNumber}\n${topic.name}`, accent, {
+            scaleX: 34,
+            scaleY: 8,
+            fontSize: 52,
+            lineColors: [accent, '#ffffff'],
+            glow: true,
+          })
+        : makeTextSprite(topic.name, '#e8eef8', {
+            scaleX: 22,
+            scaleY: 4.6,
+            fontSize: 40,
+          })
+      nameSprite.position.set(px, height + (landmarkTopics ? 14 : 6), topicRowZ)
+      nameSprite.visible = landmarkTopics
       root.add(nameSprite)
+
+      if (landmarkTopics) {
+        const done = progressById.get(topic.id)?.quiz_score > 0
+        beacons.push(addTopicBeacon(root, px, topicRowZ, height, topicFootprint, accent, topic.id, done))
+      }
 
       if (progressById.get(topic.id)?.quiz_score > 0) {
         const check = new THREE.Mesh(
@@ -1049,6 +1129,14 @@ export function buildEduCity(scene, opts) {
       })
     })
 
+    fillerJobs.push({ z, color })
+  })
+
+  // Fillers run after every street's topics exist, so none can land on (or crowd)
+  // a topic building — including topics on the neighbouring street.
+  const topicClearance = landmarkTopics ? CELL * 1.3 : topicFootprint
+  const nearTopic = (x, z) => topicSpots.some((t) => Math.hypot(x - t.x, z - t.z) < topicClearance)
+  for (const { z, color } of fillerJobs) {
     // Filler blocks on both sides — denser rows so lots don't look barren
     for (const side of [-1, 1]) {
       for (let row = 1; row <= 3; row++) {
@@ -1063,6 +1151,7 @@ export function buildEduCity(scene, opts) {
           if (onAve) continue
           if (Math.hypot(x, rowZ) < PLAZA_RADIUS + 8) continue
           if (occupied.has(lotKey(x, rowZ))) continue
+          if (nearTopic(x, rowZ)) continue
           // Skip every ~5th lot so trees can sit between buildings
           if (Math.abs(i) % 5 === 2) continue
           const height = MIN_H + rng() * (MAX_H - MIN_H)
@@ -1076,7 +1165,7 @@ export function buildEduCity(scene, opts) {
         }
       }
     }
-  })
+  }
 
   const dummy = new THREE.Object3D()
   if (fillers.length) {
@@ -1230,7 +1319,7 @@ export function buildEduCity(scene, opts) {
     let nearestDist = 42
     for (const [, entry] of buildingsById) {
       const d = Math.hypot(cameraPos.x - entry.x, cameraPos.z - entry.z)
-      entry.label.visible = d < 55
+      entry.label.visible = landmarkTopics || d < 55
       if (d < nearestDist) {
         nearestDist = d
         nearest = { ...entry, dist: d, id: entry.building.id }
@@ -1292,6 +1381,7 @@ export function buildEduCity(scene, opts) {
     applyProgress(list) {
       progressById.clear()
       for (const row of list) progressById.set(row.building_id, row)
+      for (const b of beacons) b.setDone(progressById.get(b.id)?.quiz_score > 0)
       setGrowthTower(growthStatsFromProgress(list, topics.length, buildingsById), { animate: true })
     },
     setGrowthTower,
@@ -1300,6 +1390,7 @@ export function buildEduCity(scene, opts) {
       park?.update(time, delta)
       streetLife?.update(delta)
       gate.update(time, delta)
+      for (const b of beacons) b.update(time)
       if (waterfallFx?.waterMats) {
         for (const mat of waterfallFx.waterMats) {
           if (mat.map) {

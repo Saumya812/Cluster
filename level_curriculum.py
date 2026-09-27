@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 CITY_LEVELS: dict[str, list[dict]] = {
     "ml": [
         {
@@ -266,5 +268,6 @@ def get_level(city: str, level_id: str) -> dict | None:
 
 
 def building_id_for(city: str, level_id: str, subtopic: str, index: int) -> str:
-    slug = "".join(ch if ch.isalnum() else "-" for ch in subtopic.lower()).strip("-")
-    return f"{city}-{level_id}-s{index}-{slug[:24]}"
+    # Must match buildingIdFor() in frontend/src/levelCurriculum.js exactly.
+    slug = re.sub(r"[^a-z0-9]+", "-", subtopic.lower()).strip("-")[:24]
+    return f"{city}-{level_id}-s{index}-{slug}"

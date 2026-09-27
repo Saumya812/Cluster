@@ -1182,6 +1182,32 @@ window.__clusterRoadmapDebug = () => {
   }
 }
 
+window.__clusterCityDebug = () => {
+  if (!mlCity) return null
+  const dir = new THREE.Vector3()
+  camera.getWorldDirection(dir)
+  const r = (v) => Math.round(v * 10) / 10
+  return {
+    cam: { x: r(camera.position.x), y: r(camera.position.y), z: r(camera.position.z) },
+    dir: { x: r(dir.x), y: r(dir.y), z: r(dir.z) },
+    buildings: [...mlCity.buildingsById.entries()].map(([id, e]) => {
+      const world = new THREE.Vector3()
+      e.mesh.getWorldPosition(world)
+      let visible = true
+      e.mesh.traverseAncestors((a) => { if (!a.visible) visible = false })
+      return {
+        id,
+        name: e.topic?.name,
+        x: r(world.x), y: r(world.y), z: r(world.z),
+        height: r(e.height),
+        visible: visible && e.mesh.visible,
+        inScene: Boolean(e.mesh.parent),
+        dist: r(camera.position.distanceTo(world)),
+      }
+    }),
+  }
+}
+
 function onRoadmapWheel(event) {
   if (appMode === 'ml') {
     onCityAltitudeWheel(event)

@@ -1018,11 +1018,14 @@ function setRoadmapHintVisible(visible) {
   if (el) el.hidden = !visible
   const tip = document.getElementById('roadmap-orbit-tip')
   if (tip) tip.hidden = !visible
+  const scroller = document.getElementById('roadmap-scroller')
+  if (scroller) scroller.hidden = !visible
 }
 
 function disposeRoadmapOrbit() {
   roadmapDragging = false
   roadmapPointerDown = null
+  roadmapTween = null
   // Hand canvas input back to PointerLockControls for city flight.
   controls.enabled = true
 }
@@ -1031,7 +1034,7 @@ function disposeRoadmapOrbit() {
 const ROADMAP_ROTATE_SPEED = 0.003 // radians per pixel
 const ROADMAP_ZOOM_PER_TICK = 0.18 // fraction of radius per wheel notch
 const ROADMAP_MIN_DIST = 35
-const ROADMAP_MAX_DIST = 3500
+const ROADMAP_MAX_DIST = 1800
 const roadmapCamTarget = new THREE.Vector3()
 const roadmapSpherical = new THREE.Spherical()
 const roadmapOffset = new THREE.Vector3()
@@ -1074,6 +1077,7 @@ function onRoadmapPointerDown(event) {
     return
   }
   roadmapDragging = true
+  roadmapTween = null
   roadmapLastX = event.clientX
   roadmapLastY = event.clientY
   roadmapPointerDown = { x: event.clientX, y: event.clientY }
@@ -1188,12 +1192,167 @@ function onRoadmapWheel(event) {
     return
   }
   event.preventDefault()
-  const tick = Math.sign(event.deltaY)
+  // Ctrl+wheel (also trackpad pinch) zooms; plain wheel scrolls through the levels.
+  if (event.ctrlKey) {
+    zoomRoadmapBy(Math.sign(event.deltaY))
+    return
+  }
+  let dy = event.deltaY
+  if (event.deltaMode === 1) dy *= 16
+  else if (event.deltaMode === 2) dy *= window.innerHeight
+  const zoomFactor = THREE.MathUtils.clamp(roadmapSpherical.radius / ROADMAP_FOCUS_RADIUS, 0.5, 1.5)
+  const speed = ROADMAP_SCROLL_PER_PIXEL * zoomFactor
+  scrollRoadmapBy(-dy * speed)
+}
+
+const ROADMAP_SCROLL_PER_PIXEL = 0.18 // world units per wheel pixel at focus distance
+const ROADMAP_FOCUS_RADIUS = 280 // camera distance when jumping to a level
+const ROADMAP_FOCUS_LIFT = 6 // aim a little above the island surface
+let roadmapTween = null
+let roadmapScrollerIndex = -1
+
+function zoomRoadmapBy(tick) {
   if (!tick) return
-  // Scroll up → zoom in · scroll down → zoom out (orbit dolly)
+  roadmapTween = null
   roadmapSpherical.radius *= 1 + tick * ROADMAP_ZOOM_PER_TICK
   applyRoadmapCamera()
 }
+
+function roadmapLevelFocusYs() {
+  return (islandRoadmap?.islandEntries || []).map((e) => e.y + ROADMAP_FOCUS_LIFT)
+}
+
+function scrollRoadmapBy(dy) {
+  const ys = roadmapLevelFocusYs()
+  if (!ys.length) return
+  roadmapTween = null
+  roadmapCamTarget.y = Math.max(ys[0] - 10, Math.min(ys[ys.length - 1] + 10, roadmapCamTarget.y + dy))
+  applyRoadmapCamera()
+  updateRoadmapScroller()
+}
+
+function currentRoadmapLevelIndex() {
+  const ys = roadmapLevelFocusYs()
+  let best = 0
+  let bestD = Infinity
+  ys.forEach((y, i) => {
+    const d = Math.abs(y - roadmapCamTarget.y)
+    if (d < bestD) {
+      bestD = d
+      best = i
+    }
+  })
+  return best
+}
+
+function focusRoadmapLevel(index) {
+  const ys = roadmapLevelFocusYs()
+  if (!ys.length) return
+  const i = Math.max(0, Math.min(ys.length - 1, index))
+  roadmapTween = {
+    fromY: roadmapCamTarget.y,
+    toY: ys[i],
+    fromR: roadmapSpherical.radius,
+    toR: Math.min(roadmapSpherical.radius, ROADMAP_FOCUS_RADIUS),
+    t0: performance.now(),
+    dur: 450,
+  }
+}
+
+function stepRoadmapTween(now) {
+  if (!roadmapTween) return
+  const t = roadmapTween
+  const u = Math.min((now - t.t0) / t.dur, 1)
+  const s = u * u * (3 - 2 * u)
+  roadmapCamTarget.y = t.fromY + (t.toY - t.fromY) * s
+  roadmapSpherical.radius = t.fromR + (t.toR - t.fromR) * s
+  applyRoadmapCamera()
+  updateRoadmapScroller()
+  if (u >= 1) roadmapTween = null
+}
+
+function buildRoadmapScroller() {
+  const dotsEl = document.getElementById('roadmap-level-dots')
+  if (!dotsEl) return
+  dotsEl.innerHTML = ''
+  const entries = islandRoadmap?.islandEntries || []
+  // Top of the bar = highest level, matching the tower.
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const { level } = entries[i]
+    const dot = document.createElement('button')
+    dot.type = 'button'
+    dot.className = `rl-dot rl-${level.state || 'locked'}`
+    dot.dataset.index = String(i)
+    dot.title = `Level ${level.level}: ${level.name}`
+    dot.setAttribute('aria-label', dot.title)
+    dot.addEventListener('click', () => focusRoadmapLevel(i))
+    dotsEl.appendChild(dot)
+  }
+  roadmapScrollerIndex = -1
+  updateRoadmapScroller()
+}
+
+function updateRoadmapScroller() {
+  const entries = islandRoadmap?.islandEntries || []
+  if (!entries.length) return
+  const i = currentRoadmapLevelIndex()
+  if (i === roadmapScrollerIndex) return
+  roadmapScrollerIndex = i
+  const level = entries[i].level
+  const num = document.querySelector('#roadmap-level-label .rl-num')
+  const name = document.querySelector('#roadmap-level-label .rl-name')
+  if (num) num.textContent = `Level ${level.level}`
+  if (name) name.textContent = level.name
+  document.querySelectorAll('#roadmap-level-dots .rl-dot').forEach((dot) => {
+    dot.classList.toggle('is-active', Number(dot.dataset.index) === i)
+  })
+  const up = document.getElementById('roadmap-level-up')
+  const down = document.getElementById('roadmap-level-down')
+  if (up) up.disabled = i >= entries.length - 1
+  if (down) down.disabled = i <= 0
+}
+
+document.getElementById('roadmap-level-up')?.addEventListener('click', () => {
+  focusRoadmapLevel(currentRoadmapLevelIndex() + 1)
+})
+document.getElementById('roadmap-level-down')?.addEventListener('click', () => {
+  focusRoadmapLevel(currentRoadmapLevelIndex() - 1)
+})
+
+document.addEventListener('keydown', (event) => {
+  if (appMode !== 'roadmap') return
+  if (event.target?.closest?.('input, textarea, [contenteditable="true"]')) return
+  const last = (islandRoadmap?.islandEntries?.length || 1) - 1
+  const cur = currentRoadmapLevelIndex()
+  let handled = true
+  switch (event.code) {
+    case 'ArrowUp':
+    case 'PageUp':
+      focusRoadmapLevel(cur + 1)
+      break
+    case 'ArrowDown':
+    case 'PageDown':
+      focusRoadmapLevel(cur - 1)
+      break
+    case 'Home':
+      focusRoadmapLevel(0)
+      break
+    case 'End':
+      focusRoadmapLevel(last)
+      break
+    case 'Equal':
+    case 'NumpadAdd':
+      zoomRoadmapBy(-1)
+      break
+    case 'Minus':
+    case 'NumpadSubtract':
+      zoomRoadmapBy(1)
+      break
+    default:
+      handled = false
+  }
+  if (handled) event.preventDefault()
+})
 
 const CITY_SCROLL_ALTITUDE = 9 // units per wheel notch
 
@@ -1313,6 +1472,7 @@ async function loadIslandRoadmap(cityId) {
 
   disposeRoadmapOrbit()
   enableRoadmapCamera(pose.target || pose.lookAt)
+  buildRoadmapScroller()
 
   setCityLightsVisible(true)
   setRoadmapHintVisible(true)
@@ -1898,6 +2058,7 @@ function animate() {
   if (appMode === 'globe') {
     subjectGlobe?.update(time / 1000, delta)
   } else if (appMode === 'roadmap') {
+    stepRoadmapTween(time)
     islandRoadmap?.update(time / 1000, delta)
   } else if (appMode === 'ml') {
     updateFlightMovement(delta)

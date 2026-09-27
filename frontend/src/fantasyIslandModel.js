@@ -14,7 +14,7 @@ const MAX_TEXTURE_SIZE = 1024
 let template = null
 /** @type {Promise<THREE.Object3D | null> | null} */
 let loadPromise = null
-/** @type {{ box: THREE.Box3, size: THREE.Vector3 } | null} */
+/** @type {{ box: THREE.Box3, size: THREE.Vector3, surfaceTop: number } | null} */
 let templateBounds = null
 /** @type {{ geometry: THREE.BufferGeometry, material: THREE.Material }[] | null} */
 let bakedParts = null
@@ -141,12 +141,53 @@ function prepareTemplate(root) {
       }
     }
   })
-  const box = new THREE.Box3().setFromObject(root)
+  bakedParts = bakeMergedParts(root)
+  // Bounds must be in the same root-local space as the baked instance geometry,
+  // and ignore faint FX (light beams, auras) that extend far above the ground.
+  const solidParts = bakedParts.filter(({ material }) => (material.opacity ?? 1) >= 0.9)
+  const box = new THREE.Box3()
+  for (const { geometry } of solidParts) {
+    if (!geometry.boundingBox) geometry.computeBoundingBox()
+    box.union(geometry.boundingBox)
+  }
+  if (box.isEmpty()) box.setFromObject(root)
   const size = new THREE.Vector3()
   box.getSize(size)
-  templateBounds = { box: box.clone(), size }
-  bakedParts = bakeMergedParts(root)
+  templateBounds = { box, size, surfaceTop: measureSurfaceTop(solidParts, box) }
   return root
+}
+
+/**
+ * Height of the walkable top: median of downward ray hits over the inner
+ * footprint, so trees/spires poking up don't count as ground.
+ */
+function measureSurfaceTop(parts, box) {
+  const meshes = parts.map(
+    ({ geometry }) => new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide })),
+  )
+  const center = new THREE.Vector3()
+  const size = new THREE.Vector3()
+  box.getCenter(center)
+  box.getSize(size)
+  const raycaster = new THREE.Raycaster()
+  const down = new THREE.Vector3(0, -1, 0)
+  const origin = new THREE.Vector3()
+  const hits = []
+  const STEPS = 7
+  for (let ix = 0; ix < STEPS; ix++) {
+    for (let iz = 0; iz < STEPS; iz++) {
+      const fx = (ix / (STEPS - 1) - 0.5) * 0.5
+      const fz = (iz / (STEPS - 1) - 0.5) * 0.5
+      origin.set(center.x + fx * size.x, box.max.y + 1, center.z + fz * size.z)
+      raycaster.set(origin, down)
+      const hit = raycaster.intersectObjects(meshes, false)[0]
+      if (hit) hits.push(hit.point.y)
+    }
+  }
+  for (const m of meshes) m.material.dispose()
+  if (!hits.length) return box.max.y
+  hits.sort((a, b) => a - b)
+  return hits[Math.floor(hits.length / 2)]
 }
 
 /**
@@ -158,8 +199,8 @@ export function getIslandPlacementMetrics(scale, surfaceY = 1.32) {
   if (!templateBounds) {
     return { yLift: 0, topR: 12, surfaceY, size: new THREE.Vector3(20, 20, 20) }
   }
-  const { box, size } = templateBounds
-  const yLift = surfaceY - box.max.y * scale
+  const { size, surfaceTop } = templateBounds
+  const yLift = surfaceY - surfaceTop * scale
   const topR = Math.max(Math.max(size.x, size.z) * scale * 0.42, 8)
   return {
     yLift,

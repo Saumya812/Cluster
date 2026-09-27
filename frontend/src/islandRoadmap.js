@@ -616,33 +616,39 @@ export function buildSunsetSky() {
   ctx.fillRect(0, 0, 8, 512)
   const skyTex = new THREE.CanvasTexture(canvas)
   skyTex.colorSpace = THREE.SRGBColorSpace
+  // Must stay larger than ROADMAP_MAX_DIST + stack height in main.js, and
+  // inside camera.far, or the camera ends up outside the dome.
+  const SKY_R = 2600
+  const S = SKY_R / 420
   const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(420, 32, 24),
-    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, depthWrite: false }),
+    new THREE.SphereGeometry(SKY_R, 32, 24),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, depthWrite: false, fog: false }),
   )
   group.add(sky)
 
   // Full moon — upper right, far back (world-fixed with the sky, not camera-attached)
   const moon = new THREE.Mesh(
-    new THREE.SphereGeometry(26, 32, 32),
+    new THREE.SphereGeometry(26 * S, 32, 32),
     new THREE.MeshBasicMaterial({
       color: 0xfff4cc,
       transparent: true,
       opacity: 0.95,
       depthWrite: false,
+      fog: false,
     }),
   )
-  moon.position.set(240, 250, -360)
+  moon.position.set(240 * S, 250 * S, -360 * S)
   group.add(moon)
 
   const moonHalo = new THREE.Mesh(
-    new THREE.SphereGeometry(40, 32, 32),
+    new THREE.SphereGeometry(40 * S, 32, 32),
     new THREE.MeshBasicMaterial({
       color: 0xffe8b0,
       transparent: true,
       opacity: 0.2,
       depthWrite: false,
       side: THREE.DoubleSide,
+      fog: false,
     }),
   )
   moonHalo.position.copy(moon.position)
@@ -655,7 +661,7 @@ export function buildSunsetSky() {
     const theta = Math.random() * Math.PI * 2
     // Keep stars near the top pole so they sit in the purple band only.
     const phi = Math.random() * (Math.PI * 0.32)
-    const r = 390 + Math.random() * 25
+    const r = (390 + Math.random() * 25) * S
     starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta)
     starPos[i * 3 + 1] = r * Math.cos(phi)
     starPos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta)
@@ -664,11 +670,12 @@ export function buildSunsetSky() {
     new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(starPos, 3)),
     new THREE.PointsMaterial({
       color: 0xffffff,
-      size: 0.75,
+      size: 0.75 * S,
       sizeAttenuation: true,
       transparent: true,
       opacity: 0.9,
       depthWrite: false,
+      fog: false,
     }),
   )
   stars.frustumCulled = false

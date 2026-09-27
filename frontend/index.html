@@ -43,7 +43,18 @@
     <div id="roadmap-hint" hidden>
       <p class="roadmap-title">Island Roadmap</p>
     </div>
-    <p id="roadmap-orbit-tip" hidden>Drag to orbit · scroll to zoom · click an island to open · Esc → cities</p>
+    <p id="roadmap-orbit-tip" hidden>
+      Drag to orbit · scroll to move up/down levels · <kbd>Ctrl</kbd>+scroll to zoom · click an island to open · Esc → cities
+    </p>
+    <nav id="roadmap-scroller" hidden aria-label="Levels">
+      <div id="roadmap-level-label" class="rl-label">
+        <span class="rl-num"></span>
+        <span class="rl-name"></span>
+      </div>
+      <button type="button" id="roadmap-level-up" class="rl-arrow" aria-label="Next level up">▲</button>
+      <div id="roadmap-level-dots" class="rl-dots"></div>
+      <button type="button" id="roadmap-level-down" class="rl-arrow" aria-label="Next level down">▼</button>
+    </nav>
     <div id="island-tooltip" hidden></div>
     <div id="roadmap-tutorial" hidden>
       <div class="roadmap-tutorial-card">

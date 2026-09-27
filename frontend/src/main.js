@@ -27,6 +27,7 @@ import {
 } from './careerOutcomes.js'
 import { createPlaneRig } from './planeRig.js'
 import { narrate } from './narrate.js'
+import { music } from './music.js'
 
 // Height/footprint are fully random per building, deliberately decoupled
 // from repo.height/width. The data-driven version amplified real star
@@ -1269,6 +1270,7 @@ if (import.meta.env.DEV) {
     return mlCity?.theme?.name
   }
   window.__clusterScene = scene
+  window.__clusterMusic = music
   window.__clusterOpenTopic = (i = 0) => {
     const id = typeof i === 'string' ? i : [...(mlCity?.buildingsById?.keys() || [])][i]
     openBuildingTopic(id)
@@ -1823,6 +1825,7 @@ function refreshGrowthHud(progressList) {
       stats.milestone +
       '%'
   }
+  return stats
 }
 
 // Runtime scene state
@@ -1865,16 +1868,26 @@ planeRig = createPlaneRig(scene, camera)
 buildingSidePanel = createBuildingSidePanel({
   getThemeColor: () => mlCity?.theme?.windowGlow?.[0] || null,
   async onQuizComplete(data) {
+    const prevMilestone = mlCity
+      ? growthStatsFromProgress(
+          [...mlProgressByBuilding.values()],
+          mlCity.totalBuildings,
+          mlCity.buildingsById,
+        ).milestone
+      : 0
     if (data?.building_id) {
       mlProgressByBuilding.set(data.building_id, data)
     }
+    let stats = null
     try {
       const list = await fetchCityProgress(activeCityId)
       mlProgressByBuilding = new Map(list.map((p) => [p.building_id, p]))
-      refreshGrowthHud(list)
+      stats = refreshGrowthHud(list)
     } catch {
-      refreshGrowthHud([...mlProgressByBuilding.values()])
+      stats = refreshGrowthHud([...mlProgressByBuilding.values()])
     }
+    // Growth Tower crossed 25/50/75/100% (100% = level fully completed).
+    if (stats && stats.milestone > prevMilestone) music.playMilestone()
     narrate('Well done! Your tower has grown.')
     if (data?.level?.completed) {
       narrate('New level unlocked. Keep going!')
@@ -2233,6 +2246,7 @@ setCityUiVisible(false)
 setCityLightsVisible(false)
 setLoadingProgress(1, 'Ready')
 bootGlobe()
+music.init()
 
 // Warm Kenney nature/city kits + all island GLBs in the background so the first roadmap is faster
 void loadKenneyAssets(() => {}).catch((err) => {
@@ -2266,6 +2280,8 @@ function renderFrame() {
     fpsFrames = 0
     fpsLast = time
   }
+
+  music.setScene(appMode === 'roadmap' ? 'roadmap' : appMode === 'ml' ? 'city' : 'globe')
 
   if (appMode === 'globe') {
     subjectGlobe?.update(time / 1000, delta)

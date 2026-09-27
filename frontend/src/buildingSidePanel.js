@@ -2,6 +2,7 @@
  * Right side panel — Reading / Videos / Research / Visualization / Quiz.
  */
 import { fetchCareerOutcomes, formatSalary, outcomeForLevel } from './careerOutcomes.js'
+import { music } from './music.js'
 
 export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getThemeColor }) {
   const root = document.getElementById('building-side-panel')
@@ -56,6 +57,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
     hidePlayer()
     loadSeq += 1
     bodyEl.innerHTML = ''
+    music.setPanel(false)
     onClose?.()
   }
 
@@ -68,6 +70,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
       btn.textContent = tab.label
       btn.addEventListener('click', () => {
         activeTab = tab.id
+        music.setPanel(true, activeTab)
         hidePlayer()
         renderTabs()
         loadTab()
@@ -189,6 +192,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
     }
     bodyEl.appendChild(intro)
     if (topic.quizDone) showCareerCard(intro, 'before')
+    else music.setCareerVisible(false)
 
     const blocks = questions.map((q, qi) => {
       const block = document.createElement('section')
@@ -344,10 +348,12 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
       careerCollapsed = !careerCollapsed
       card.classList.toggle('is-collapsed', careerCollapsed)
       syncToggle()
+      music.setCareerVisible(!careerCollapsed)
     })
 
     if (where === 'before') anchor.before(card)
     else anchor.after(card)
+    music.setCareerVisible(!careerCollapsed)
   }
 
   async function markEngage(kind) {
@@ -443,6 +449,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
       root.classList.add('is-open')
       root.setAttribute('aria-hidden', 'false')
       document.body.classList.add('side-panel-open')
+      music.setPanel(true, activeTab)
       loadTab()
     },
     close: hide,

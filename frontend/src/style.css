@@ -1017,6 +1017,10 @@ body.side-panel-open #map-wrap {
   right: min(430px, calc(94vw + 12px));
 }
 
+body.side-panel-open #fps-counter {
+  right: calc(min(400px, 92vw) + 12px);
+}
+
 #push-toast-container {
   position: fixed;
   top: 18px;
@@ -1662,6 +1666,102 @@ button.bsp-card:hover {
 
 .bsp-quiz-q {
   margin-bottom: 8px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(232, 238, 248, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.bsp-quiz-q.is-right {
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.bsp-quiz-q.is-wrong {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.bsp-quiz-intro,
+.bsp-quiz-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(61, 231, 255, 0.25);
+  background: rgba(61, 231, 255, 0.06);
+}
+
+.bsp-quiz-kicker {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--neon-cyan);
+}
+
+.bsp-quiz-topic {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.bsp-quiz-progress {
+  font-size: 0.76rem;
+  color: var(--ink-dim);
+}
+
+.bsp-quiz-tip {
+  margin-top: 6px;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: #ffd08a;
+}
+
+.bsp-quiz-summary.is-pass {
+  border-color: rgba(52, 211, 153, 0.5);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.bsp-quiz-summary.is-retry {
+  border-color: rgba(255, 179, 71, 0.5);
+  background: rgba(255, 179, 71, 0.08);
+}
+
+.bsp-quiz-score {
+  font-family: var(--font-display);
+  font-size: 2rem;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.bsp-quiz-verdict {
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+}
+
+.lesson-choice:disabled {
+  cursor: default;
+}
+
+.lesson-choice.is-correct {
+  border-color: rgba(52, 211, 153, 0.8);
+  background: rgba(52, 211, 153, 0.14);
+}
+
+.lesson-choice.is-incorrect {
+  border-color: rgba(248, 113, 113, 0.8);
+  background: rgba(248, 113, 113, 0.12);
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 113, 113, 0.6);
+}
+
+.bsp-quiz-why {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--ink-dim);
 }
 
 .bsp-quiz-choices {

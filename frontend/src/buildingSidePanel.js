@@ -20,6 +20,8 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
   let quizAnswers = []
   let quizQuestions = []
   let engagement = { quiz_unlocked: false }
+  let loadSeq = 0
+  const STALE = Symbol('stale')
 
   const TABS = [
     { id: 'reading', label: 'Reading' },
@@ -49,6 +51,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
     root.setAttribute('aria-hidden', 'true')
     document.body.classList.remove('side-panel-open')
     hidePlayer()
+    loadSeq += 1
     bodyEl.innerHTML = ''
     onClose?.()
   }
@@ -153,22 +156,43 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
       .join('')
   }
 
-  function renderQuizLocked() {
-    bodyEl.innerHTML = `
-      <div class="bsp-card is-fallback">
-        <p class="bsp-card-title">Quiz locked</p>
-        <p class="bsp-card-snip">Open at least one Reading result or Video to unlock the quiz for this topic.</p>
-      </div>`
-  }
-
   function renderQuiz(questions) {
     quizQuestions = questions
     quizAnswers = questions.map(() => null)
     bodyEl.innerHTML = ''
-    questions.forEach((q, qi) => {
+    if (!questions.length) {
+      bodyEl.innerHTML = `<div class="bsp-card is-fallback"><p>No quiz available for this topic yet.</p></div>`
+      return
+    }
+
+    const intro = document.createElement('div')
+    intro.className = 'bsp-quiz-intro'
+    intro.innerHTML = `
+      <span class="bsp-quiz-kicker">Topic quiz</span>
+      <span class="bsp-quiz-topic"></span>
+      <span class="bsp-quiz-progress"></span>`
+    intro.querySelector('.bsp-quiz-topic').textContent = topic.name
+    const progressEl = intro.querySelector('.bsp-quiz-progress')
+    const updateProgress = () => {
+      const answered = quizAnswers.filter((a) => a !== null).length
+      progressEl.textContent = `${answered} / ${questions.length} answered`
+    }
+    updateProgress()
+    if (!engagement.quiz_unlocked) {
+      const tip = document.createElement('span')
+      tip.className = 'bsp-quiz-tip'
+      tip.textContent = 'Tip: skim the Reading or Videos tab first if this topic is new to you.'
+      intro.appendChild(tip)
+    }
+    bodyEl.appendChild(intro)
+
+    const blocks = questions.map((q, qi) => {
       const block = document.createElement('section')
       block.className = 'bsp-quiz-q'
-      block.innerHTML = `<p class="bsp-card-title">${qi + 1}. ${q.prompt}</p>`
+      const prompt = document.createElement('p')
+      prompt.className = 'bsp-card-title'
+      prompt.textContent = `${qi + 1}. ${q.prompt}`
+      block.appendChild(prompt)
       const choices = document.createElement('div')
       choices.className = 'bsp-quiz-choices'
       ;(q.choices || []).forEach((c, ci) => {
@@ -180,12 +204,15 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
           quizAnswers[qi] = ci
           ;[...choices.children].forEach((el) => el.classList.remove('selected'))
           b.classList.add('selected')
+          updateProgress()
         })
         choices.appendChild(b)
       })
       block.appendChild(choices)
       bodyEl.appendChild(block)
+      return { block, choices }
     })
+
     const submit = document.createElement('button')
     submit.type = 'button'
     submit.className = 'bsp-open-yt'
@@ -210,7 +237,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
         })
         const data = await res.json()
         if (data.error) throw new Error(data.error)
-        bodyEl.innerHTML = `<div class="bsp-card"><p class="bsp-card-title">Score ${Math.round(data.submitted_score)}%</p><p class="bsp-card-snip">${data.correct_count}/${data.total} correct. Growth Tower updated.</p></div>`
+        showQuizReview(data, blocks, intro, submit)
         onQuizComplete?.(data)
       } catch (err) {
         submit.disabled = false
@@ -218,6 +245,47 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
       }
     })
     bodyEl.appendChild(submit)
+  }
+
+  function showQuizReview(data, blocks, intro, submit) {
+    const score = Math.round(data.submitted_score)
+    const passed = score >= 60
+    const summary = document.createElement('div')
+    summary.className = `bsp-quiz-summary ${passed ? 'is-pass' : 'is-retry'}`
+    summary.innerHTML = `
+      <span class="bsp-quiz-score">${score}%</span>
+      <span class="bsp-quiz-verdict"></span>`
+    summary.querySelector('.bsp-quiz-verdict').textContent =
+      `${data.correct_count}/${data.total} correct · Growth Tower updated.` +
+      (passed ? '' : ' Read the explanations and retake to raise your best score.')
+    intro.replaceWith(summary)
+
+    ;(data.review || []).forEach((item, qi) => {
+      const { block, choices } = blocks[qi] || {}
+      if (!block) return
+      const picked = quizAnswers[qi]
+      block.classList.add(picked === item.correct ? 'is-right' : 'is-wrong')
+      ;[...choices.children].forEach((btn, ci) => {
+        btn.disabled = true
+        btn.classList.remove('selected')
+        if (ci === item.correct) btn.classList.add('is-correct')
+        else if (ci === picked) btn.classList.add('is-incorrect')
+      })
+      if (item.explanation) {
+        const why = document.createElement('p')
+        why.className = 'bsp-quiz-why'
+        why.textContent = item.explanation
+        block.appendChild(why)
+      }
+    })
+
+    const retake = document.createElement('button')
+    retake.type = 'button'
+    retake.className = 'bsp-open-yt'
+    retake.textContent = 'Retake quiz'
+    retake.addEventListener('click', () => renderQuiz(quizQuestions))
+    submit.replaceWith(retake)
+    bodyEl.scrollTop = 0
   }
 
   async function markEngage(kind) {
@@ -241,48 +309,50 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
     if (!topic) return
     const cityLabel = topic.cityLabel || topic.cityId
     bodyEl.innerHTML = cardLoading('Loading…')
+    // Responses can arrive after the user switched tabs/topics; drop those.
+    const seq = ++loadSeq
+    const getJson = async (url) => {
+      const data = await fetch(url).then((r) => r.json())
+      if (seq !== loadSeq) throw STALE
+      return data
+    }
 
     try {
       if (activeTab === 'reading') {
         const q = `${topic.name} ${cityLabel}`
-        const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`)
-        const data = await res.json()
+        const data = await getJson(`/api/search?query=${encodeURIComponent(q)}`)
         renderReading(data.results || [])
       } else if (activeTab === 'videos') {
         const q = `${topic.name} ${cityLabel} tutorial`
-        const res = await fetch(
+        const data = await getJson(
           `/api/youtube?type=playlist&limit=3&query=${encodeURIComponent(q)}`,
         )
-        const data = await res.json()
         renderMediaCards(data.results || (data.playlistId ? [data] : []), 'playlist')
       } else if (activeTab === 'papers') {
         const q = `${topic.name} ${cityLabel}`
-        const res = await fetch(`/api/papers?query=${encodeURIComponent(q)}`)
-        const data = await res.json()
+        const data = await getJson(`/api/papers?query=${encodeURIComponent(q)}`)
         renderPapers(data.results || [])
       } else if (activeTab === 'viz') {
         const q = `${topic.name} visualization simulation`
-        const res = await fetch(
+        const data = await getJson(
           `/api/youtube?type=video&limit=2&query=${encodeURIComponent(q)}`,
         )
-        const data = await res.json()
         renderMediaCards(data.results || [], 'video')
       } else if (activeTab === 'quiz') {
-        const eng = await fetch(
+        const eng = await getJson(
           `/api/engagement?city=${encodeURIComponent(topic.cityId)}&building_id=${encodeURIComponent(topic.id)}`,
-        ).then((r) => r.json())
-        engagement = eng
-        if (!eng.quiz_unlocked) {
-          renderQuizLocked()
-          return
-        }
-        const res = await fetch(
-          `/api/quiz?topic=${encodeURIComponent(topic.name)}&city=${encodeURIComponent(topic.cityId || 'ml')}`,
         )
-        const data = await res.json()
+        engagement = eng
+        const params = new URLSearchParams({
+          topic: topic.name,
+          city: topic.cityId || 'ml',
+          building_id: topic.id,
+        })
+        const data = await getJson(`/api/quiz?${params}`)
         renderQuiz(data.questions || [])
       }
     } catch (err) {
+      if (err === STALE) return
       bodyEl.innerHTML = `<div class="bsp-card is-fallback"><p>${err.message || err}</p></div>`
     }
   }

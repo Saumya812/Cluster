@@ -49,6 +49,7 @@ from progress import (
     sync_level_completion,
 )
 from level_curriculum import building_id_for, get_city_levels, get_level
+from quiz_bank import bank_quiz_for_building
 from youtube_search import search_playlists, search_playlist, search_videos, youtube_configured
 from narration import narration_configured, synthesize_speech
 from learner_db import ensure_backend, using_tiger
@@ -546,32 +547,44 @@ async def api_papers(query: str = "") -> dict:
     return {"query": query, "results": results}
 
 
+async def _quiz_questions(topic: str, city: str, building_id: str = "") -> tuple[list[dict], str]:
+    """Hand-written bank for level topics; Gemini/fallback for anything else."""
+    banked = bank_quiz_for_building(city, building_id) if building_id else None
+    if banked:
+        return banked, "bank"
+    return await generate_quiz(topic, city=city), "generated"
+
+
 @app.get("/api/quiz")
-async def api_quiz(topic: str = "", city: str = "ml") -> dict:
-    questions = await generate_quiz(topic, city=city)
+async def api_quiz(topic: str = "", city: str = "ml", building_id: str = "") -> dict:
+    questions, source = await _quiz_questions(topic, city, building_id)
     # Hide answers from client; scoring happens on submit.
     public = [
         {"prompt": q.get("prompt"), "choices": q.get("choices") or []}
         for q in questions
     ]
-    return {"topic": topic, "city": city, "questions": public}
+    return {"topic": topic, "city": city, "source": source, "questions": public}
 
 
 @app.post("/api/quiz/submit")
 async def api_quiz_submit(req: EduQuizSubmitRequest) -> dict:
-    questions = await generate_quiz(req.topic, city=req.city)
+    questions, _ = await _quiz_questions(req.topic, req.city, req.building_id)
     if len(req.answers) != len(questions):
         return {"error": "answers length mismatch"}
     correct_count = 0
+    review = []
     for ans, q in zip(req.answers, questions):
-        if ans == int(q.get("correct", -1)):
+        correct = int(q.get("correct", -1))
+        if ans == correct:
             correct_count += 1
+        review.append({"correct": correct, "explanation": q.get("explanation") or ""})
     total = len(questions) or 1
     score = (correct_count / total) * 100.0
     result = save_building_quiz(req.city, req.building_id, score)
     result["correct_count"] = correct_count
     result["total"] = total
     result["submitted_score"] = score
+    result["review"] = review
 
     # building_id: "{city}-{level_id}-s{n}-..."
     parts = req.building_id.split("-")

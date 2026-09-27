@@ -1239,8 +1239,12 @@ if (import.meta.env.DEV) {
     document.body.dataset.appMode = 'ml'
     setBloomForMode('ml')
     await loadLevelCity(activeCityId, entry.level)
-    await new Promise((r) => setTimeout(r, 1000))
-    await saveRoadmapPrefs(activeCityId, { last_level_id })
+    // The city's own save isn't awaited and can land late; restore until it sticks.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await new Promise((r) => setTimeout(r, 1000))
+      await saveRoadmapPrefs(activeCityId, { last_level_id })
+      if ((await fetchRoadmapPrefs(activeCityId)).last_level_id === last_level_id) break
+    }
     return mlCity?.theme?.name
   }
   window.__clusterScene = scene

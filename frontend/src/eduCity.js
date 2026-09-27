@@ -627,6 +627,132 @@ function addPlazaStatues(root, surfaceY) {
   }
 }
 
+const FOUNTAIN_Z = 17
+const FOUNTAIN_GRAVITY = 16
+const FOUNTAIN_COUNT = 260
+const FOUNTAIN_SPOUT_Y = 2.3
+const FOUNTAIN_WATER_Y = 0.7
+const FOUNTAIN_CONE = 0.2 // radians from vertical
+
+function makeRadialTexture(size = 64) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+  g.addColorStop(0, '#ffffff')
+  g.addColorStop(0.4, 'rgba(255,255,255,0.75)')
+  g.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, size, size)
+  return new THREE.CanvasTexture(canvas)
+}
+
+/** Stone fountain in front of the Growth Tower with arcing water particles. */
+function addPlazaFountain(root, surfaceY, waterColor) {
+  const group = new THREE.Group()
+  group.name = 'plaza-fountain'
+  group.position.set(0, surfaceY, FOUNTAIN_Z)
+  root.add(group)
+
+  const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a8f9c, roughness: 0.85 })
+  const basin = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.5, 0.8, 28), stoneMat)
+  basin.position.y = 0.4
+  const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.7, 1.9, 12), stoneMat)
+  pedestal.position.y = 0.95
+  const bowl = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 0.5, 0.4, 18), stoneMat)
+  bowl.position.y = 2.05
+  const water = new THREE.Mesh(
+    new THREE.CircleGeometry(3.9, 28),
+    new THREE.MeshStandardMaterial({
+      color: waterColor.clone().multiplyScalar(0.35),
+      emissive: waterColor,
+      emissiveIntensity: 0.35,
+      roughness: 0.15,
+      metalness: 0.1,
+    }),
+  )
+  water.rotation.x = -Math.PI / 2
+  water.position.y = 0.82
+  group.add(basin, pedestal, bowl, water)
+
+  const glow = new THREE.Mesh(
+    new THREE.CircleGeometry(6.8, 40),
+    new THREE.MeshStandardMaterial({
+      color: 0x000000,
+      emissive: waterColor,
+      emissiveIntensity: 0.8,
+      alphaMap: makeRadialTexture(128),
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+    }),
+  )
+  glow.rotation.x = -Math.PI / 2
+  glow.position.y = 0.03
+  group.add(glow)
+
+  const positions = new Float32Array(FOUNTAIN_COUNT * 3)
+  const velocities = new Float32Array(FOUNTAIN_COUNT * 3)
+  const launch = (i) => {
+    const speed = 7.5 + Math.random() * 4
+    const tilt = Math.random() * FOUNTAIN_CONE
+    const az = Math.random() * Math.PI * 2
+    velocities[i * 3] = Math.sin(tilt) * Math.cos(az) * speed
+    velocities[i * 3 + 1] = Math.cos(tilt) * speed
+    velocities[i * 3 + 2] = Math.sin(tilt) * Math.sin(az) * speed
+    positions[i * 3] = 0
+    positions[i * 3 + 1] = FOUNTAIN_SPOUT_Y
+    positions[i * 3 + 2] = 0
+  }
+  // Start each particle part-way through its arc so the jet is full from frame one.
+  for (let i = 0; i < FOUNTAIN_COUNT; i++) {
+    launch(i)
+    const vy = velocities[i * 3 + 1]
+    const drop = FOUNTAIN_SPOUT_Y - FOUNTAIN_WATER_Y
+    const flight = (vy + Math.sqrt(vy * vy + 2 * FOUNTAIN_GRAVITY * drop)) / FOUNTAIN_GRAVITY
+    const t = Math.random() * flight
+    positions[i * 3] += velocities[i * 3] * t
+    positions[i * 3 + 1] += vy * t - 0.5 * FOUNTAIN_GRAVITY * t * t
+    positions[i * 3 + 2] += velocities[i * 3 + 2] * t
+    velocities[i * 3 + 1] -= FOUNTAIN_GRAVITY * t
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  const posAttr = new THREE.BufferAttribute(positions, 3)
+  posAttr.setUsage(THREE.DynamicDrawUsage)
+  geometry.setAttribute('position', posAttr)
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 4, 0), 8)
+  const points = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: waterColor,
+      size: 0.42,
+      map: makeRadialTexture(),
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  )
+  points.name = 'fountain-water'
+  group.add(points)
+
+  return {
+    update(delta) {
+      const dt = Math.min(delta, 0.05)
+      for (let i = 0; i < FOUNTAIN_COUNT; i++) {
+        const k = i * 3
+        velocities[k + 1] -= FOUNTAIN_GRAVITY * dt
+        positions[k] += velocities[k] * dt
+        positions[k + 1] += velocities[k + 1] * dt
+        positions[k + 2] += velocities[k + 2] * dt
+        if (positions[k + 1] < FOUNTAIN_WATER_Y) launch(i)
+      }
+      posAttr.needsUpdate = true
+    },
+  }
+}
+
 function makePortalTexture(accent) {
   const canvas = document.createElement('canvas')
   canvas.width = 64
@@ -1458,6 +1584,11 @@ export function buildEduCity(scene, opts) {
   growthLabel.position.set(0, stats.height + 8, 0)
   root.add(growthLabel)
   addPlazaStatues(root, plaza.position.y + 0.2)
+  const fountain = addPlazaFountain(
+    root,
+    plaza.position.y + 0.2,
+    new THREE.Color(theme?.windowGlow?.[0] ?? '#00ffff'),
+  )
 
   const titleZ = cityHalfZ + 18
   const gate = buildTitleGate(accent, cityLabel.toUpperCase())
@@ -1653,6 +1784,7 @@ export function buildEduCity(scene, opts) {
     update(time, delta) {
       park?.update(time, delta)
       streetLife?.update(delta)
+      fountain.update(delta)
       gate.update(time, delta)
       for (const b of beacons) b.update(time)
       if (waterfallFx?.waterMats) {

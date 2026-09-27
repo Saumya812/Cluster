@@ -286,8 +286,26 @@ controls.addEventListener('unlock', () => {
 
 const move = { forward: false, backward: false, left: false, right: false, up: false, down: false }
 
+const FLIGHT_KEYS = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Space', 'ShiftLeft', 'ShiftRight',
+])
+
 document.addEventListener('keydown', (event) => {
   if (event.target?.closest?.('input, textarea, [contenteditable="true"]')) return
+  // A button left focused (e.g. Back to Islands) would otherwise be "clicked" by Space.
+  if (
+    appMode === 'ml' &&
+    FLIGHT_KEYS.has(event.code) &&
+    !buildingSidePanel?.isOpen &&
+    !topicPanel?.isOpen
+  ) {
+    event.preventDefault()
+    if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+      document.activeElement.blur()
+    }
+  }
   switch (event.code) {
     case 'KeyW': case 'ArrowUp': move.forward = true; break
     case 'KeyS': case 'ArrowDown': move.backward = true; break
@@ -1901,7 +1919,8 @@ districtPicker = createDistrictPicker({
   },
 })
 
-document.getElementById('back-to-islands')?.addEventListener('click', () => {
+document.getElementById('back-to-islands')?.addEventListener('click', (event) => {
+  event.currentTarget.blur()
   if (appMode === 'ml') returnToRoadmap()
 })
 
@@ -2126,11 +2145,14 @@ document.addEventListener('keydown', (event) => {
     return
   }
 
-  // Leaving the city is only via the Back to Islands button, so Esc can't bounce you out mid-flight.
   if (controls.isLocked) {
     controls.unlock()
     event.preventDefault()
+    return
   }
+
+  returnToRoadmap()
+  event.preventDefault()
 })
 
 window.addEventListener('pointerdown', (event) => {

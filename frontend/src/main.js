@@ -19,6 +19,7 @@ import { loadIslandModels } from './fantasyIslandModel.js'
 import { createDistrictPicker } from './districtPicker.js'
 import { createTopicPanel } from './topicPanel.js'
 import { createBuildingSidePanel } from './buildingSidePanel.js'
+import { fetchCareerOutcomes, formatSalary, getCachedCareerOutcomes } from './careerOutcomes.js'
 import { createPlaneRig } from './planeRig.js'
 import { narrate } from './narrate.js'
 
@@ -1129,6 +1130,7 @@ function onRoadmapPointerDown(event) {
   roadmapLastY = event.clientY
   roadmapPointerDown = { x: event.clientX, y: event.clientY }
   hideIslandTooltip()
+  hideCareerTip()
   renderer.domElement.style.cursor = 'grabbing'
   try {
     renderer.domElement.setPointerCapture(event.pointerId)
@@ -1138,7 +1140,15 @@ function onRoadmapPointerDown(event) {
 }
 
 function onRoadmapPointerMove(event) {
-  if (appMode !== 'roadmap' || !roadmapDragging) return
+  if (appMode !== 'roadmap') return
+  if (!roadmapDragging) {
+    if (event.target?.closest?.('#district-picker, #hud, #blocker, .side-panel, #topic-panel, button, a, input')) {
+      hideCareerTip()
+    } else {
+      roadmapHoverPointer = { x: event.clientX, y: event.clientY }
+    }
+    return
+  }
   const dx = event.clientX - roadmapLastX
   const dy = event.clientY - roadmapLastY
   roadmapLastX = event.clientX
@@ -1248,6 +1258,11 @@ if (import.meta.env.DEV) {
     return mlCity?.theme?.name
   }
   window.__clusterScene = scene
+  window.__clusterOpenTopic = (i = 0) => {
+    const id = [...(mlCity?.buildingsById?.keys() || [])][i]
+    openBuildingTopic(id)
+    return id || null
+  }
   // Orbit the roadmap camera around one island (keeps the current viewing angle).
   window.__clusterRoadmapFocus = (n, dist = 120) => {
     const entry = islandRoadmap?.islandEntries?.find((e) => e.level.level === n)
@@ -1502,9 +1517,60 @@ function showIslandTooltip(message, clientX, clientY) {
   tip.style.top = `${clientY}px`
 }
 
+const careerTipEl = document.getElementById('island-career-tip')
+const careerTipAnchor = new THREE.Vector3()
+const careerTipScale = new THREE.Vector3()
+let roadmapHoverPointer = null
+let careerTipEntry = null
+
+function hideCareerTip() {
+  roadmapHoverPointer = null
+  careerTipEntry = null
+  if (careerTipEl) careerTipEl.hidden = true
+}
+
+/** Hover tooltip under the island label: "Leads to: … · Avg salary $…". */
+function updateRoadmapCareerTip() {
+  if (!careerTipEl) return
+  if (roadmapHoverPointer) {
+    const { x, y } = roadmapHoverPointer
+    roadmapHoverPointer = null
+    cityPointer.x = (x / window.innerWidth) * 2 - 1
+    cityPointer.y = -(y / window.innerHeight) * 2 + 1
+    cityRaycaster.setFromCamera(cityPointer, camera)
+    const hit = islandRoadmap?.pick(cityRaycaster)
+    const entry = hit && islandRoadmap.islandEntries.find((e) => e.level.id === hit.level.id)
+    const data = getCachedCareerOutcomes(activeCityId)
+    if (!entry?.island?.userData?.levelLabel || !data) {
+      hideCareerTip()
+      return
+    }
+    if (entry !== careerTipEntry) {
+      careerTipEntry = entry
+      const titles = (data.top_job_titles || []).slice(0, 2).join(', ')
+      careerTipEl.textContent = `Leads to: ${titles} · Avg salary ${formatSalary(data.avg_first_salary)}`
+    }
+  }
+  if (!careerTipEntry) return
+
+  const label = careerTipEntry.island.userData.levelLabel
+  label.getWorldPosition(careerTipAnchor)
+  label.getWorldScale(careerTipScale)
+  careerTipAnchor.y -= careerTipScale.y * 0.5
+  careerTipAnchor.project(camera)
+  if (careerTipAnchor.z > 1) {
+    careerTipEl.hidden = true
+    return
+  }
+  careerTipEl.style.left = `${((careerTipAnchor.x + 1) / 2) * window.innerWidth}px`
+  careerTipEl.style.top = `${((1 - careerTipAnchor.y) / 2) * window.innerHeight}px`
+  careerTipEl.hidden = false
+}
+
 function disposeIslandRoadmap() {
   disposeRoadmapOrbit()
   hideIslandTooltip()
+  hideCareerTip()
   hideRoadmapTutorial()
   islandRoadmap?.dispose?.()
   islandRoadmap = null
@@ -1523,6 +1589,7 @@ async function loadIslandRoadmap(cityId) {
   loadingOverlay.classList.remove('hidden')
   stopWaterfallAudio()
   hideRoadmapTutorial()
+  fetchCareerOutcomes(cityId)
 
   let kenneyAssets = null
   try {
@@ -1781,6 +1848,7 @@ const cityPointer = new THREE.Vector2()
 planeRig = createPlaneRig(scene, camera)
 
 buildingSidePanel = createBuildingSidePanel({
+  getThemeColor: () => mlCity?.theme?.windowGlow?.[0] || null,
   async onQuizComplete(data) {
     if (data?.building_id) {
       mlProgressByBuilding.set(data.building_id, data)
@@ -1907,6 +1975,7 @@ async function enterLevelFromRoadmap(level) {
   if (level.state === 'locked') return
   roadmapSelecting = true
   hideIslandTooltip()
+  hideCareerTip()
   hideRoadmapTutorial()
   try {
     if (controls.isLocked) controls.unlock()
@@ -2129,6 +2198,7 @@ document.addEventListener('keydown', (event) => {
 // the event target isn't the canvas (overlays, body, etc.).
 window.addEventListener('pointerdown', onRoadmapPointerDown)
 window.addEventListener('pointermove', onRoadmapPointerMove)
+renderer.domElement.addEventListener('pointerleave', hideCareerTip)
 window.addEventListener('pointerup', onRoadmapPointerUp)
 window.addEventListener('pointercancel', onRoadmapPointerUp)
 window.addEventListener('wheel', onRoadmapWheel, { passive: false })
@@ -2187,6 +2257,7 @@ function renderFrame() {
   } else if (appMode === 'roadmap') {
     stepRoadmapTween(time)
     islandRoadmap?.update(time / 1000, delta)
+    updateRoadmapCareerTip()
   } else if (appMode === 'ml') {
     planeRig?.update(delta, move, {
       flying: controls.isLocked,

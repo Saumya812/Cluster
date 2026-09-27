@@ -36,6 +36,7 @@ from content_apis import (
     google_search,
     mark_engagement,
 )
+from career_outcomes import CITY_JOB_FAMILIES, get_career_outcomes, load_career_outcomes
 from curriculum import score_building_quiz
 from db import DB_PATH, init_db
 from edu_topics import CITY_META, list_topics, topic_count
@@ -332,6 +333,10 @@ async def lifespan(app: FastAPI):
         f"{'ready' if gemini_configured() else 'waiting for GEMINI_API_KEY'}"
     )
     await init_backboard()
+    try:
+        await asyncio.to_thread(load_career_outcomes)
+    except Exception as exc:
+        print(f"[live_server] career outcomes failed to load: {exc}")
 
     task = asyncio.create_task(poll_loop())
     print(f"[live_server] background poll task created: {task.get_name()} (done={task.done()})")
@@ -500,6 +505,17 @@ async def api_post_roadmap_prefs(req: RoadmapPrefsRequest) -> dict:
         tutorial_dismissed=req.tutorial_dismissed,
         last_level_id=req.last_level_id,
     )
+
+
+@app.get("/api/career-outcomes")
+async def api_career_outcomes(city: str = "ml") -> dict:
+    if city not in CITY_JOB_FAMILIES:
+        return {"error": f"Unknown city: {city}", "city": city}
+    data = get_career_outcomes(city)
+    if not data:
+        return {"error": "Career outcomes dataset unavailable", "city": city}
+    meta = CITY_META.get(city, {})
+    return {**data, "label": meta.get("label", city)}
 
 
 @app.post("/api/narrate")

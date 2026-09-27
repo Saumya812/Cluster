@@ -556,6 +556,7 @@ function buildFantasyIsland(
     state,
     edgeGlow,
     hereMarker: here,
+    levelLabel: label,
     clickable: !locked,
     locked,
     index,

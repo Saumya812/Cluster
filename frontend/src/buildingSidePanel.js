@@ -1,7 +1,9 @@
 /**
  * Right side panel — Reading / Videos / Research / Visualization / Quiz.
  */
-export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
+import { fetchCareerOutcomes, formatSalary } from './careerOutcomes.js'
+
+export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getThemeColor }) {
   const root = document.getElementById('building-side-panel')
   const titleEl = document.getElementById('bsp-title')
   const streetEl = document.getElementById('bsp-street')
@@ -259,6 +261,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
       `${data.correct_count}/${data.total} correct · Growth Tower updated.` +
       (passed ? '' : ' Read the explanations and retake to raise your best score.')
     intro.replaceWith(summary)
+    showCareerCard(summary)
 
     ;(data.review || []).forEach((item, qi) => {
       const { block, choices } = blocks[qi] || {}
@@ -286,6 +289,43 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
     retake.addEventListener('click', () => renderQuiz(quizQuestions))
     submit.replaceWith(retake)
     bodyEl.scrollTop = 0
+  }
+
+  async function showCareerCard(anchor) {
+    const seq = loadSeq
+    const data = await fetchCareerOutcomes(topic?.cityId)
+    if (!data || seq !== loadSeq || !anchor.isConnected) return
+
+    const card = document.createElement('section')
+    card.className = 'bsp-career-card'
+    card.style.setProperty('--career-accent', getThemeColor?.() || '#3de7ff')
+    card.innerHTML = `
+      <button type="button" class="bsp-career-dismiss" aria-label="Dismiss career outcomes">×</button>
+      <span class="bsp-career-kicker">Career outcomes</span>
+      <p class="bsp-career-line bsp-career-roles"></p>
+      <p class="bsp-career-line"><span>Average starting salary:</span> <strong class="bsp-career-salary"></strong></p>
+      <p class="bsp-career-line"><span>Top employers:</span> <strong class="bsp-career-employers"></strong></p>
+      <p class="bsp-career-line"><strong class="bsp-career-intern"></strong> had internships before their first job</p>
+      <span class="bsp-career-source"></span>`
+
+    const roles = (data.top_job_titles || []).slice(0, 3)
+    const rolesEl = card.querySelector('.bsp-career-roles')
+    rolesEl.append(`Students who learned ${data.label || topic.cityId} went on to roles like `)
+    const rolesStrong = document.createElement('strong')
+    rolesStrong.textContent = roles.join(', ')
+    rolesEl.append(rolesStrong)
+    card.querySelector('.bsp-career-salary').textContent = formatSalary(data.avg_first_salary)
+    card.querySelector('.bsp-career-employers').textContent = (data.top_employers || []).join(', ')
+    card.querySelector('.bsp-career-intern').textContent =
+      data.internship_pct != null ? `${data.internship_pct}%` : '—'
+    card.querySelector('.bsp-career-source').textContent =
+      `UMBC DoIT alumni dataset (synthetic, HackUMBC 2026) · ${data.sample_size} graduates`
+
+    card.querySelector('.bsp-career-dismiss').addEventListener('click', () => {
+      card.classList.add('is-leaving')
+      card.addEventListener('animationend', () => card.remove(), { once: true })
+    })
+    anchor.after(card)
   }
 
   async function markEngage(kind) {

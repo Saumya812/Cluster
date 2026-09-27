@@ -27,6 +27,23 @@ export function getCachedCareerOutcomes(cityId) {
   return resolved.get(cityId || 'ml') || null
 }
 
+/** Outcomes for one island; falls back to the city-wide summary. */
+export function outcomeForLevel(data, levelId) {
+  if (!data) return null
+  const level = levelId && data.levels?.[levelId]
+  if (level) return { label: data.label, level: levelId, ...level }
+  return {
+    label: data.label,
+    level: null,
+    top_job_titles: data.top_job_titles,
+    avg_salary: data.avg_first_salary,
+    top_employers: data.top_employers,
+    top_regions: data.top_regions,
+    internship_pct: data.internship_pct,
+    sample_size: data.sample_size,
+  }
+}
+
 export function formatSalary(n) {
   return Number.isFinite(n) ? `$${Math.round(n).toLocaleString('en-US')}` : '—'
 }

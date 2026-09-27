@@ -2,7 +2,7 @@
 Career outcomes per learning city, from the HackUMBC 2026 DoIT synthetic dataset.
 
 Parses alumni.csv, employment_history.csv and student_experience.csv once
-(stdlib csv only) and keeps per-city summaries in memory.
+(stdlib csv only) and keeps per-city and per-level summaries in memory.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ import csv
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from level_skill_map import LEVEL_SKILLS
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "hackumbc-2026-main" / "data"
 NA = "Not Applicable"
@@ -32,6 +34,18 @@ CITY_JOB_FAMILIES: dict[str, list[str]] = {
 }
 
 INTERNSHIP_TYPES = {"Internship", "Co-op"}
+
+# (highest level number, seniority_level values): later islands lead to more senior roles.
+LEVEL_SENIORITY: list[tuple[int, set[str]]] = [
+    (3, {"Entry"}),
+    (4, {"Entry", "Mid"}),
+    (7, {"Mid"}),
+    (8, {"Mid", "Senior"}),
+    (10, {"Senior", "Lead"}),
+]
+MIN_TITLE_SPELLS = 10
+MIN_LEVEL_SAMPLE = 30
+DIVERSITY_FLOOR = 0.05
 _SEASON_ORDER = {"Spring": 0, "Summer": 1, "Fall": 2}
 
 _cache: dict[str, dict[str, Any]] = {}
@@ -60,6 +74,71 @@ def _top(counter: Counter, n: int) -> list[str]:
     return [name for name, _ in counter.most_common(n)]
 
 
+def _level_band(level_id: str) -> set[str]:
+    n = int(level_id.lstrip("l") or 1)
+    for max_level, band in LEVEL_SENIORITY:
+        if n <= max_level:
+            return band
+    return LEVEL_SENIORITY[-1][1]
+
+
+def _level_outcomes(
+    city: str, jobs: list[dict[str, str]], interned_before_grad: set[str]
+) -> dict[str, dict[str, Any]]:
+    """
+    Per level: rank job titles by how strongly their roles call for the level's
+    skills (support x precision) within a seniority band that rises with level.
+    Adjacent levels avoid repeating the previous level's two headline titles.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    prev_pair: list[str] = []
+    for level_id, skill_list in LEVEL_SKILLS.get(city, {}).items():
+        skills = set(skill_list)
+        band = _level_band(level_id)
+        pool = [j for j in jobs if j["seniority_level"] in band]
+
+        title_total: Counter = Counter(j["job_title"] for j in pool)
+        support: Counter = Counter()
+        for j in pool:
+            overlap = len(skills & j["_tags"])
+            if overlap:
+                support[j["job_title"]] += overlap
+        score = {
+            t: s * s / (title_total[t] * len(skills))
+            for t, s in support.items()
+            if title_total[t] >= MIN_TITLE_SPELLS
+        }
+        ranked = sorted(score, key=lambda t: -score[t])
+        if ranked:
+            best = score[ranked[0]]
+            fresh = [t for t in ranked if t not in prev_pair and score[t] >= DIVERSITY_FLOOR * best]
+            if not fresh and ranked[0] in prev_pair[:1] and len(ranked) > 1:
+                fresh = [ranked[1]]
+            ranked = fresh[:2] + [t for t in ranked if t not in fresh[:2]]
+        prev_pair = ranked[:2]
+
+        need = min(2, len(skills))
+        matched = [j for j in pool if len(skills & j["_tags"]) >= need]
+        if len(matched) < MIN_LEVEL_SAMPLE:
+            matched = [j for j in pool if skills & j["_tags"]]
+        salaries = [int(j["annual_salary_usd"]) for j in matched if j["annual_salary_usd"].isdigit()]
+        people = {j["campus_id"] for j in matched}
+
+        out[level_id] = {
+            "skills": skill_list,
+            "seniority": sorted(band),
+            "top_job_titles": ranked[:5],
+            "avg_salary": round(sum(salaries) / len(salaries)) if salaries else None,
+            "top_employers": _top(Counter(j["employer"] for j in matched), 3),
+            "top_regions": _top(Counter(j["region"] for j in matched), 3),
+            "internship_pct": (
+                round(100 * len(people & interned_before_grad) / len(people)) if people else None
+            ),
+            "sample_size": len(matched),
+        }
+    return out
+
+
 def load_career_outcomes() -> dict[str, dict[str, Any]]:
     """Parse the CSVs and precompute every city's summary. Safe to call again."""
     _cache.clear()
@@ -70,6 +149,8 @@ def load_career_outcomes() -> dict[str, dict[str, Any]]:
     alumni = _read("alumni.csv")
     jobs = _read("employment_history.csv")
     experience = _read("student_experience.csv")
+    for j in jobs:
+        j["_tags"] = set(filter(None, j["role_skill_tags"].split("|")))
 
     grad_term = {a["campus_id"]: _term_key(a["graduation_term"]) for a in alumni}
     interned_before_grad: set[str] = set()
@@ -113,6 +194,7 @@ def load_career_outcomes() -> dict[str, dict[str, Any]]:
             "top_regions": _top(regions, 3),
             "internship_pct": round(100 * interned / len(cohort)) if cohort else None,
             "sample_size": len(cohort),
+            "levels": _level_outcomes(city, jobs, interned_before_grad),
         }
 
     print(

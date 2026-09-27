@@ -1,7 +1,7 @@
 /**
  * Right side panel — Reading / Videos / Research / Visualization / Quiz.
  */
-import { fetchCareerOutcomes, formatSalary } from './careerOutcomes.js'
+import { fetchCareerOutcomes, formatSalary, outcomeForLevel } from './careerOutcomes.js'
 
 export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getThemeColor }) {
   const root = document.getElementById('building-side-panel')
@@ -23,6 +23,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
   let quizQuestions = []
   let engagement = { quiz_unlocked: false }
   let loadSeq = 0
+  let careerCollapsed = false
   const STALE = Symbol('stale')
 
   const TABS = [
@@ -187,6 +188,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
       intro.appendChild(tip)
     }
     bodyEl.appendChild(intro)
+    if (topic.quizDone) showCareerCard(intro, 'before')
 
     const blocks = questions.map((q, qi) => {
       const block = document.createElement('section')
@@ -239,6 +241,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
         })
         const data = await res.json()
         if (data.error) throw new Error(data.error)
+        topic.quizDone = true
         showQuizReview(data, blocks, intro, submit)
         onQuizComplete?.(data)
       } catch (err) {
@@ -291,41 +294,60 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose, getTh
     bodyEl.scrollTop = 0
   }
 
-  async function showCareerCard(anchor) {
+  /** Career outcomes card; stays on the Quiz tab once this building's quiz is done. */
+  async function showCareerCard(anchor, where = 'after') {
     const seq = loadSeq
-    const data = await fetchCareerOutcomes(topic?.cityId)
+    const data = outcomeForLevel(await fetchCareerOutcomes(topic?.cityId), topic?.levelId)
     if (!data || seq !== loadSeq || !anchor.isConnected) return
+    bodyEl.querySelectorAll('.bsp-career-card').forEach((el) => el.remove())
 
     const card = document.createElement('section')
-    card.className = 'bsp-career-card'
+    card.className = `bsp-career-card${careerCollapsed ? ' is-collapsed' : ''}`
     card.style.setProperty('--career-accent', getThemeColor?.() || '#3de7ff')
     card.innerHTML = `
-      <button type="button" class="bsp-career-dismiss" aria-label="Dismiss career outcomes">×</button>
-      <span class="bsp-career-kicker">Career outcomes</span>
-      <p class="bsp-career-line bsp-career-roles"></p>
-      <p class="bsp-career-line"><span>Average starting salary:</span> <strong class="bsp-career-salary"></strong></p>
-      <p class="bsp-career-line"><span>Top employers:</span> <strong class="bsp-career-employers"></strong></p>
-      <p class="bsp-career-line"><strong class="bsp-career-intern"></strong> had internships before their first job</p>
-      <span class="bsp-career-source"></span>`
+      <div class="bsp-career-head">
+        <span class="bsp-career-kicker"></span>
+        <button type="button" class="bsp-career-toggle"></button>
+      </div>
+      <div class="bsp-career-body">
+        <p class="bsp-career-line bsp-career-roles"></p>
+        <p class="bsp-career-line"><span>Average salary in these roles:</span> <strong class="bsp-career-salary"></strong></p>
+        <p class="bsp-career-line"><span>Top employers:</span> <strong class="bsp-career-employers"></strong></p>
+        <p class="bsp-career-line"><strong class="bsp-career-intern"></strong> had internships before their first job</p>
+        <span class="bsp-career-source"></span>
+      </div>`
 
+    card.querySelector('.bsp-career-kicker').textContent = topic?.levelNum
+      ? `Career outcomes · Level ${topic.levelNum}`
+      : 'Career outcomes'
     const roles = (data.top_job_titles || []).slice(0, 3)
     const rolesEl = card.querySelector('.bsp-career-roles')
     rolesEl.append(`Students who learned ${data.label || topic.cityId} went on to roles like `)
     const rolesStrong = document.createElement('strong')
     rolesStrong.textContent = roles.join(', ')
     rolesEl.append(rolesStrong)
-    card.querySelector('.bsp-career-salary').textContent = formatSalary(data.avg_first_salary)
+    card.querySelector('.bsp-career-salary').textContent = formatSalary(data.avg_salary)
     card.querySelector('.bsp-career-employers').textContent = (data.top_employers || []).join(', ')
     card.querySelector('.bsp-career-intern').textContent =
       data.internship_pct != null ? `${data.internship_pct}%` : '—'
     card.querySelector('.bsp-career-source').textContent =
-      `UMBC DoIT alumni dataset (synthetic, HackUMBC 2026) · ${data.sample_size} graduates`
+      `UMBC DoIT alumni dataset (synthetic, HackUMBC 2026) · ${data.sample_size} matching roles`
 
-    card.querySelector('.bsp-career-dismiss').addEventListener('click', () => {
-      card.classList.add('is-leaving')
-      card.addEventListener('animationend', () => card.remove(), { once: true })
+    const toggle = card.querySelector('.bsp-career-toggle')
+    const syncToggle = () => {
+      toggle.textContent = careerCollapsed ? 'Show' : '×'
+      toggle.setAttribute('aria-expanded', String(!careerCollapsed))
+      toggle.setAttribute('aria-label', careerCollapsed ? 'Show career outcomes' : 'Hide career outcomes')
+    }
+    syncToggle()
+    toggle.addEventListener('click', () => {
+      careerCollapsed = !careerCollapsed
+      card.classList.toggle('is-collapsed', careerCollapsed)
+      syncToggle()
     })
-    anchor.after(card)
+
+    if (where === 'before') anchor.before(card)
+    else anchor.after(card)
   }
 
   async function markEngage(kind) {

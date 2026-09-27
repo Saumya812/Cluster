@@ -19,7 +19,12 @@ import { loadIslandModels } from './fantasyIslandModel.js'
 import { createDistrictPicker } from './districtPicker.js'
 import { createTopicPanel } from './topicPanel.js'
 import { createBuildingSidePanel } from './buildingSidePanel.js'
-import { fetchCareerOutcomes, formatSalary, getCachedCareerOutcomes } from './careerOutcomes.js'
+import {
+  fetchCareerOutcomes,
+  formatSalary,
+  getCachedCareerOutcomes,
+  outcomeForLevel,
+} from './careerOutcomes.js'
 import { createPlaneRig } from './planeRig.js'
 import { narrate } from './narrate.js'
 
@@ -244,6 +249,10 @@ function hideFlightOverlays() {
 function requestFlightLock() {
   if (document.body.dataset.appMode !== 'ml') return
   if (buildingSidePanel?.isOpen || topicPanel?.isOpen) return
+  // WASD is ignored while a text field (e.g. "Fly to a subtopic") has focus.
+  if (document.activeElement?.closest?.('input, textarea, [contenteditable="true"]')) {
+    document.activeElement.blur()
+  }
   controls.lock()
 }
 
@@ -1108,6 +1117,8 @@ function applyRoadmapCamera() {
 }
 
 function enableRoadmapCamera(target) {
+  // A camera tween started on the roadmap can finish after a level city loaded.
+  if (appMode !== 'roadmap') return
   roadmapCamTarget.copy(target)
   syncRoadmapSphericalFromCamera()
   applyRoadmapCamera()
@@ -1259,7 +1270,7 @@ if (import.meta.env.DEV) {
   }
   window.__clusterScene = scene
   window.__clusterOpenTopic = (i = 0) => {
-    const id = [...(mlCity?.buildingsById?.keys() || [])][i]
+    const id = typeof i === 'string' ? i : [...(mlCity?.buildingsById?.keys() || [])][i]
     openBuildingTopic(id)
     return id || null
   }
@@ -1540,7 +1551,7 @@ function updateRoadmapCareerTip() {
     cityRaycaster.setFromCamera(cityPointer, camera)
     const hit = islandRoadmap?.pick(cityRaycaster)
     const entry = hit && islandRoadmap.islandEntries.find((e) => e.level.id === hit.level.id)
-    const data = getCachedCareerOutcomes(activeCityId)
+    const data = outcomeForLevel(getCachedCareerOutcomes(activeCityId), entry?.level?.id)
     if (!entry?.island?.userData?.levelLabel || !data) {
       hideCareerTip()
       return
@@ -1548,7 +1559,7 @@ function updateRoadmapCareerTip() {
     if (entry !== careerTipEntry) {
       careerTipEntry = entry
       const titles = (data.top_job_titles || []).slice(0, 2).join(', ')
-      careerTipEl.textContent = `Leads to: ${titles} · Avg salary ${formatSalary(data.avg_first_salary)}`
+      careerTipEl.textContent = `Leads to: ${titles} · Avg salary ${formatSalary(data.avg_salary)}`
     }
   }
   if (!careerTipEntry) return
@@ -1678,6 +1689,7 @@ async function loadLevelCity(cityId, level) {
   setLoadingProgress(0.12, 'Entering ' + levelLabel + '…')
   setRoadmapHintVisible(false)
   hideRoadmapTutorial()
+  disposeRoadmapOrbit()
   renderer.domElement.style.cursor = ''
 
   let progress = []
@@ -1785,6 +1797,9 @@ function openBuildingTopic(buildingId) {
     cityId: activeCityId || mlCity?.cityId || 'ml',
     cityLabel: mlCity?.cityLabel || CITY_LABELS[activeCityId] || activeCityId,
     topic: entry.topic,
+    levelId: activeLevel?.id || null,
+    levelNum: activeLevel?.level || null,
+    quizDone: Number(mlProgressByBuilding.get(buildingId)?.quiz_score || 0) > 0,
   })
 }
 

@@ -1768,7 +1768,7 @@ button.bsp-card:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 36px 12px 14px;
+  padding: 10px 12px 12px 14px;
   margin-bottom: 10px;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--career-accent) 50%, transparent);
@@ -1778,8 +1778,26 @@ button.bsp-card:hover {
   animation: bsp-career-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-.bsp-career-card.is-leaving {
-  animation: bsp-career-out 0.25s ease-in both;
+.bsp-career-card.is-collapsed {
+  padding-bottom: 10px;
+}
+
+.bsp-career-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bsp-career-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: bsp-career-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.bsp-career-card.is-collapsed .bsp-career-body {
+  display: none;
 }
 
 @keyframes bsp-career-in {
@@ -1790,13 +1808,6 @@ button.bsp-card:hover {
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes bsp-career-out {
-  to {
-    opacity: 0;
-    transform: translateY(8px);
   }
 }
 
@@ -1827,30 +1838,31 @@ button.bsp-card:hover {
   opacity: 0.7;
 }
 
-.bsp-career-dismiss {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  width: 24px;
+.bsp-career-toggle {
+  min-width: 24px;
   height: 24px;
-  padding: 0;
+  padding: 0 6px;
   border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--ink-dim);
-  font-size: 1.1rem;
+  font-size: 0.78rem;
   line-height: 1;
   cursor: pointer;
 }
 
-.bsp-career-dismiss:hover {
+.bsp-career-toggle[aria-expanded='true'] {
+  font-size: 1.1rem;
+}
+
+.bsp-career-toggle:hover {
   color: var(--ink);
   background: color-mix(in srgb, var(--career-accent) 18%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bsp-career-card,
-  .bsp-career-card.is-leaving {
+  .bsp-career-body {
     animation-duration: 0.01s;
   }
 }

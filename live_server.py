@@ -508,14 +508,19 @@ async def api_post_roadmap_prefs(req: RoadmapPrefsRequest) -> dict:
 
 
 @app.get("/api/career-outcomes")
-async def api_career_outcomes(city: str = "ml") -> dict:
+async def api_career_outcomes(city: str = "ml", level: str | None = None) -> dict:
     if city not in CITY_JOB_FAMILIES:
         return {"error": f"Unknown city: {city}", "city": city}
     data = get_career_outcomes(city)
     if not data:
         return {"error": "Career outcomes dataset unavailable", "city": city}
-    meta = CITY_META.get(city, {})
-    return {**data, "label": meta.get("label", city)}
+    label = CITY_META.get(city, {}).get("label", city)
+    if level:
+        level_data = (data.get("levels") or {}).get(level)
+        if not level_data:
+            return {"error": f"Unknown level: {level}", "city": city}
+        return {"city": city, "label": label, "level": level, **level_data}
+    return {**data, "label": label}
 
 
 @app.post("/api/narrate")

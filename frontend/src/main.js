@@ -1,6 +1,5 @@
 import './style.css'
 import * as THREE from 'three'
-import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
@@ -83,15 +82,6 @@ const NIGHT_FOG_COLOR = 0x070b16
 // instance's own instanceFlash value (1 = just triggered, fading to 0).
 const FLASH_EMISSIVE_BOOST = 4.2
 const FLASH_DIFFUSE_BOOST = 1.0
-
-// Flight movement tuning. The city grew from a ~365x250 footprint to
-// ~1430x1175 with the 50-district expansion -- 30 units/sec took nearly
-// 48s to cross it, which felt like crawling. 75 crosses it in ~19s.
-const MOVE_SPEED = 85 // units/sec — GitHub city
-const PLANE_MOVE_SPEED = 55 // smoother glide in ML city
-const MOVE_DAMPING = 8 // higher = stops faster once a key is released
-
-let activeMoveSpeed = MOVE_SPEED
 
 const app = document.querySelector('#app')
 
@@ -196,11 +186,32 @@ const neonBounce = new THREE.DirectionalLight(0xff9a5c, 0.35)
 neonBounce.position.set(-4, -2, 6)
 scene.add(neonBounce)
 
-// Free-look flying camera: click the overlay to lock the mouse, then look
-// around freely and fly with WASD + Space/Shift. Escape (or any browser
-// pointer-lock-exit gesture) releases the mouse and brings the overlay
-// back automatically via the 'unlock' event below.
-const controls = new PointerLockControls(camera, renderer.domElement)
+/**
+ * Flight on/off state for the keyboard-flown plane. Keeps the old
+ * lock/unlock event API, but never grabs the pointer — the cursor stays
+ * free so topic towers can be clicked straight from the plane.
+ */
+class FlightControls extends THREE.EventDispatcher {
+  constructor() {
+    super()
+    this.enabled = true
+    this.isLocked = false
+  }
+
+  lock() {
+    if (!this.enabled || this.isLocked) return
+    this.isLocked = true
+    this.dispatchEvent({ type: 'lock' })
+  }
+
+  unlock() {
+    if (!this.isLocked) return
+    this.isLocked = false
+    this.dispatchEvent({ type: 'unlock' })
+  }
+}
+
+const controls = new FlightControls()
 
 const blocker = document.getElementById('blocker')
 const resumeFlightBtn = document.getElementById('resume-flight')
@@ -213,7 +224,7 @@ function showTakeoffOverlay({ paused = false } = {}) {
   const title = blocker.querySelector('h1')
   const cta = blocker.querySelector('.cta')
   if (paused) {
-    if (title) title.textContent = 'Flight paused · cursor is free'
+    if (title) title.textContent = 'Flight paused'
     if (cta) cta.textContent = 'Click here to resume'
     if (resumeFlightBtn) resumeFlightBtn.hidden = true
   } else {
@@ -265,6 +276,7 @@ controls.addEventListener('unlock', () => {
 const move = { forward: false, backward: false, left: false, right: false, up: false, down: false }
 
 document.addEventListener('keydown', (event) => {
+  if (event.target?.closest?.('input, textarea, [contenteditable="true"]')) return
   switch (event.code) {
     case 'KeyW': case 'ArrowUp': move.forward = true; break
     case 'KeyS': case 'ArrowDown': move.backward = true; break
@@ -273,6 +285,12 @@ document.addEventListener('keydown', (event) => {
     case 'Space': move.up = true; break
     case 'ShiftLeft': case 'ShiftRight': move.down = true; break
   }
+})
+
+// A keyup lost to alt-tab or a focused panel would otherwise leave the plane
+// flying on its own.
+window.addEventListener('blur', () => {
+  for (const key of Object.keys(move)) move[key] = false
 })
 
 document.addEventListener('keyup', (event) => {
@@ -285,42 +303,6 @@ document.addEventListener('keyup', (event) => {
     case 'ShiftLeft': case 'ShiftRight': move.down = false; break
   }
 })
-
-const velocity = new THREE.Vector3()
-
-function updateFlightMovement(delta) {
-  if (!controls.isLocked) return
-
-  const damping = Math.exp(-MOVE_DAMPING * delta)
-  velocity.multiplyScalar(damping)
-
-  const forwardInput = Number(move.forward) - Number(move.backward)
-  const rightInput = Number(move.right) - Number(move.left)
-  const upInput = Number(move.up) - Number(move.down)
-
-  if (forwardInput !== 0 || rightInput !== 0) {
-    const inputLength = Math.hypot(forwardInput, rightInput) || 1
-    velocity.z -= (forwardInput / inputLength) * activeMoveSpeed * delta * MOVE_DAMPING
-    velocity.x -= (rightInput / inputLength) * activeMoveSpeed * delta * MOVE_DAMPING
-  }
-  if (upInput !== 0) {
-    velocity.y += upInput * activeMoveSpeed * delta * MOVE_DAMPING
-  } else {
-    velocity.y *= damping
-  }
-
-  controls.moveRight(-velocity.x * delta)
-  controls.moveForward(-velocity.z * delta)
-  camera.position.y += velocity.y * delta
-
-  // Invisible wall at waterfall edges for level cities
-  const b = mlCity?.flightBounds
-  if (b) {
-    camera.position.x = Math.min(b.maxX, Math.max(b.minX, camera.position.x))
-    camera.position.z = Math.min(b.maxZ, Math.max(b.minZ, camera.position.z))
-    camera.position.y = Math.min(b.maxY, Math.max(b.minY, camera.position.y))
-  }
-}
 
 // Post-processing: bloom so lit windows glow softly instead of rendering
 // as flat bright squares. Threshold keeps it from blooming the (much
@@ -430,16 +412,33 @@ function placeCameraAtStreetLevel(repos) {
   camera.lookAt(centerX, 18, centerZ)
 }
 
-// Jumps the camera to a specific repo's building -- used by the HUD search
-// box. PointerLockControls re-derives its internal rotation state from
-// camera.quaternion on the next mouse move, so setting position/lookAt
-// directly here is safe and needs no coordination with it.
+// Jumps to a specific building -- used by the HUD search box. In a level
+// city the plane is parked on the street with its nose toward the tower.
 function flyToRepo(repo) {
+  if (planeRig?.object.visible) {
+    const entry = [...(mlCity?.buildingsById?.values() || [])].find(
+      (e) => e.x === repo.x && e.z === repo.z,
+    )
+    if (entry?.approach) {
+      planeRig.placeAt(entry.approach.position, entry.approach.lookAt, mlCity.flightBounds)
+    } else {
+      flyToPoint(repo.x, repo.z)
+    }
+    return
+  }
   camera.position.set(repo.x - 18, 16, repo.z + 22)
   camera.lookAt(repo.x, 14, repo.z)
 }
 
 function flyToPoint(x, z, _label = '') {
+  if (planeRig?.object.visible) {
+    planeRig.placeAt(
+      new THREE.Vector3(x, 40, z + 50),
+      new THREE.Vector3(x, 12, z),
+      mlCity?.flightBounds,
+    )
+    return
+  }
   camera.position.set(x - 28, 22, z + 36)
   camera.lookAt(x, 12, z)
 }
@@ -1026,7 +1025,7 @@ function disposeRoadmapOrbit() {
   roadmapDragging = false
   roadmapPointerDown = null
   roadmapTween = null
-  // Hand canvas input back to PointerLockControls for city flight.
+  // Hand canvas input back to the plane for city flight.
   controls.enabled = true
 }
 
@@ -1190,6 +1189,13 @@ window.__clusterCityDebug = () => {
   return {
     cam: { x: r(camera.position.x), y: r(camera.position.y), z: r(camera.position.z) },
     dir: { x: r(dir.x), y: r(dir.y), z: r(dir.z) },
+    plane: planeRig && {
+      x: r(planeRig.position.x),
+      y: r(planeRig.position.y),
+      z: r(planeRig.position.z),
+      view: planeRig.view,
+      flying: controls.isLocked,
+    },
     buildings: [...mlCity.buildingsById.entries()].map(([id, e]) => {
       const world = new THREE.Vector3()
       e.mesh.getWorldPosition(world)
@@ -1391,6 +1397,10 @@ function onCityAltitudeWheel(event) {
   const tick = Math.sign(event.deltaY)
   if (!tick) return
   // Scroll up → climb · scroll down → descend
+  if (planeRig?.object.visible) {
+    planeRig.nudgeAltitude(-tick * CITY_SCROLL_ALTITUDE, mlCity?.flightBounds)
+    return
+  }
   camera.position.y -= tick * CITY_SCROLL_ALTITUDE
   const b = mlCity?.flightBounds
   if (b) {
@@ -1564,6 +1574,7 @@ async function loadLevelCity(cityId, level) {
     repos: mlCity.reposForHud,
     colorMap,
     camera,
+    player: planeRig,
     flyTo: flyToRepo,
     flyToPoint,
     mode: 'ml',
@@ -1592,21 +1603,18 @@ async function loadLevelCity(cityId, level) {
 
   applySunsetAtmosphere()
   const spawn = mlCity.spawnPose
-  if (spawn?.position && spawn?.lookAt) {
-    camera.position.copy(spawn.position)
-    camera.lookAt(spawn.lookAt)
-  } else {
-    camera.position.set(0, 72, 140)
-    camera.lookAt(0, 16, 0)
-  }
+  planeRig?.show()
+  planeRig?.placeAt(
+    spawn?.position || new THREE.Vector3(0, 40, 140),
+    spawn?.lookAt || new THREE.Vector3(0, 16, 0),
+    mlCity.flightBounds,
+  )
   // Hide subject-globe chrome while flying the level city
   const globeHint = document.getElementById('globe-hint')
   if (globeHint) globeHint.hidden = true
 
   setBloomForMode('ml')
   cullController = setupDistanceCulling(scene, camera, scene.fog?.density || 0.00045)
-  activeMoveSpeed = PLANE_MOVE_SPEED
-  planeRig?.show()
   setCityUiVisible(true)
   setBackToIslandsVisible(true)
   startWaterfallAudio()
@@ -1690,7 +1698,7 @@ const SCREEN_CENTER = new THREE.Vector2(0, 0)
 const cityRaycaster = new THREE.Raycaster()
 const cityPointer = new THREE.Vector2()
 
-planeRig = createPlaneRig(camera)
+planeRig = createPlaneRig(scene, camera)
 
 buildingSidePanel = createBuildingSidePanel({
   async onQuizComplete(data) {
@@ -1862,8 +1870,6 @@ async function returnToRoadmap() {
   setCityUiVisible(false)
   setBackToIslandsVisible(false)
   nearPrompt.hidden = true
-  activeMoveSpeed = MOVE_SPEED
-
   const level = activeLevel
   disposeMlCity()
   loadingOverlay.classList.remove('hidden')
@@ -1903,7 +1909,6 @@ function returnToPicker() {
   cityFlightStarted = false
   escArmedForBack = false
   activeLevel = null
-  activeMoveSpeed = MOVE_SPEED
   showDistrictPicker()
 }
 
@@ -1925,7 +1930,6 @@ function returnToGlobe() {
   cityFlightStarted = false
   escArmedForBack = false
   activeLevel = null
-  activeMoveSpeed = MOVE_SPEED
   document.body.dataset.appMode = 'globe'
   bootGlobe()
 }
@@ -2003,7 +2007,13 @@ document.addEventListener('keydown', (event) => {
     return
   }
 
-  if (!controls.isLocked && escArmedForBack) {
+  if (controls.isLocked) {
+    controls.unlock()
+    event.preventDefault()
+    return
+  }
+
+  if (escArmedForBack) {
     returnToRoadmap()
     event.preventDefault()
   }
@@ -2014,7 +2024,6 @@ window.addEventListener('pointerdown', (event) => {
   if (appMode === 'roadmap') return // handled by onRoadmapPointerDown
 
   if (appMode !== 'ml' || topicPanel?.isOpen || buildingSidePanel?.isOpen) return
-  if (controls.isLocked) return
   cityPointer.x = (event.clientX / window.innerWidth) * 2 - 1
   cityPointer.y = -(event.clientY / window.innerHeight) * 2 + 1
   cityRaycaster.setFromCamera(cityPointer, camera)
@@ -2022,9 +2031,17 @@ window.addEventListener('pointerdown', (event) => {
   const hit = hits[0]?.object
   if (hit?.userData?.buildingId) {
     openBuildingTopic(hit.userData.buildingId)
-  } else {
+  } else if (!controls.isLocked) {
     requestFlightLock()
   }
+})
+
+// V swaps between the chase camera and the cockpit view.
+document.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyV' || event.repeat) return
+  if (event.target?.closest?.('input, textarea, [contenteditable="true"]')) return
+  if (appMode !== 'ml' || !planeRig?.object.visible) return
+  planeRig.toggleView()
 })
 
 // Roadmap orbit + zoom: listen on window so scroll/click still work when
@@ -2087,15 +2104,19 @@ function animate() {
     stepRoadmapTween(time)
     islandRoadmap?.update(time / 1000, delta)
   } else if (appMode === 'ml') {
-    updateFlightMovement(delta)
-    planeRig?.update(delta, move)
+    planeRig?.update(delta, move, {
+      flying: controls.isLocked,
+      bounds: mlCity?.flightBounds,
+    })
     liveFeed?.update()
     cullController?.update()
     hud?.update()
     cityscape?.update(time / 1000)
 
     if (mlCity && !topicPanel?.isOpen && !buildingSidePanel?.isOpen) {
-      const near = mlCity.updateApproachLabels(camera.position)
+      const near = mlCity.updateApproachLabels(
+        planeRig?.object.visible ? planeRig.position : camera.position,
+      )
       aimRaycaster.setFromCamera(SCREEN_CENTER, camera)
       const aimedId = aimRaycaster.intersectObjects(mlCity.clickables || [], false)[0]?.object
         ?.userData?.buildingId

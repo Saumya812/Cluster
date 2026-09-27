@@ -196,6 +196,7 @@ export function createHud({
   repos,
   colorMap,
   camera,
+  player = camera,
   flyTo,
   flyToPoint,
   mode = 'cluster',
@@ -331,7 +332,7 @@ export function createHud({
 
     camera.getWorldDirection(dirVector)
     const yaw = Math.atan2(dirVector.x, dirVector.z)
-    const [px, py] = worldToMinimap(camera.position.x, camera.position.z)
+    const [px, py] = worldToMinimap(player.position.x, player.position.z)
 
     minimapCtx.save()
     minimapCtx.translate(px, py)
@@ -347,7 +348,7 @@ export function createHud({
     minimapCtx.stroke()
     minimapCtx.restore()
 
-    const near = nearestDistrict(districtCenters, camera.position.x, camera.position.z)
+    const near = nearestDistrict(districtCenters, player.position.x, player.position.z)
     if (near && near.name !== currentDistrict?.name) {
       currentDistrict = near
       if (locationLine && mode !== 'ml') {

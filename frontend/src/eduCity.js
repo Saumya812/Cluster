@@ -1039,13 +1039,20 @@ export function buildEduCity(scene, opts) {
     const topicRowZ = z + topicSide * (ROAD_W * 0.5 + CELL * 0.65)
 
     streetTopics.forEach((topic, bi) => {
-      const x = (bi - (streetTopics.length - 1) / 2) * CELL
-      if (Math.hypot(x, topicRowZ) < PLAZA_RADIUS + 6) {
-        // shift outward if plaza collision
-      }
-      let px = x
-      if (Math.hypot(px, topicRowZ) < PLAZA_RADIUS + 8) {
-        px = Math.sign(px || 1) * (PLAZA_RADIUS + 10 + (bi % 3) * CELL)
+      let px
+      if (landmarkTopics) {
+        // Spread landmarks across the whole city in topic order, zig-zagging
+        // between streets, so consecutive topics never stand side by side.
+        const k = topics.indexOf(topic)
+        const spread = CELL * 5
+        px = topics.length > 1 ? -spread + (2 * spread * k) / (topics.length - 1) : 0
+        // Keep off the gate axis so no tower hides behind the welcome banner.
+        if (Math.abs(px) < CELL) px = CELL * 1.5
+      } else {
+        px = (bi - (streetTopics.length - 1) / 2) * CELL
+        if (Math.hypot(px, topicRowZ) < PLAZA_RADIUS + 8) {
+          px = Math.sign(px || 1) * (PLAZA_RADIUS + 10 + (bi % 3) * CELL)
+        }
       }
 
       const subCount = Math.max(topic.subtopicCount || topic.subtopics?.length || 3, 2)
@@ -1109,12 +1116,18 @@ export function buildEduCity(scene, opts) {
         root.add(check)
       }
 
+      // Parking spot for the plane: down the road (always clear), nose to the tower.
+      const approachSide = px > 0 ? -1 : 1
       buildingsById.set(topic.id, {
         mesh,
         label: nameSprite,
         x: px,
         z: topicRowZ,
         height,
+        approach: {
+          position: new THREE.Vector3(px + approachSide * 58, 26, z),
+          lookAt: new THREE.Vector3(px, height * 0.5, topicRowZ),
+        },
         building: { id: topic.id, name: topic.name },
         street: { name: streetName },
         topic,

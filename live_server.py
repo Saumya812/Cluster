@@ -8,7 +8,7 @@ Also serves the interactive map + Gemini tour-guide HTTP API used by the
 frontend HUD.
 
 Run with:
-    uvicorn live_server:app --reload
+    uvicorn live_server:app --port 8002 --reload
 """
 
 import asyncio
@@ -26,10 +26,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from content_apis import (
-    arxiv_search,
+    paper_search,
     generate_quiz,
     get_engagement,
     google_search,
@@ -543,7 +544,7 @@ async def api_search(query: str = "") -> dict:
 
 @app.get("/api/papers")
 async def api_papers(query: str = "") -> dict:
-    results = await arxiv_search(query, limit=3)
+    results = await paper_search(query, limit=3)
     return {"query": query, "results": results}
 
 
@@ -713,3 +714,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         pass
     finally:
         connected_clients.discard(websocket)
+
+
+# Production: serve the built frontend (`npm run build`) from this same server,
+# so the site, /api and /ws share one origin. Mounted last so API routes win.
+FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

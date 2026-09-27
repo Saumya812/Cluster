@@ -141,7 +141,7 @@ export function createBuildingSidePanel({ cityId, onQuizComplete, onClose }) {
 
   function renderPapers(results) {
     if (!results?.length) {
-      bodyEl.innerHTML = `<div class="bsp-card is-fallback"><p>No Arxiv papers found.</p><a href="https://arxiv.org/search/?query=${encodeURIComponent(topic.name)}&searchtype=all" target="_blank" rel="noopener">Search Arxiv</a></div>`
+      bodyEl.innerHTML = `<div class="bsp-card is-fallback"><p>Couldn't load papers right now.</p><a href="https://scholar.google.com/scholar?q=${encodeURIComponent(topic.name)}" target="_blank" rel="noopener">Search Google Scholar</a> · <a href="https://arxiv.org/search/?query=${encodeURIComponent(topic.name)}&searchtype=all" target="_blank" rel="noopener">Search arXiv</a></div>`
       return
     }
     bodyEl.innerHTML = results

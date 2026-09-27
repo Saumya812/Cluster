@@ -1,0 +1,8 @@
+.env
+.git
+.claude
+venv
+__pycache__
+*.log
+frontend/node_modules
+frontend/dist

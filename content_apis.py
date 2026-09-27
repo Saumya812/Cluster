@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import html
 import json
 import os
 import re
@@ -20,6 +22,8 @@ load_dotenv()
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "d76e1a7c64f04452a").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+# Optional: keyless OpenAlex works but has a small daily budget.
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "").strip()
 QUIZ_GEMINI_MODEL = "gemini-1.5-flash"
 
 _LETTER_TO_INDEX = {"a": 0, "b": 1, "c": 2, "d": 3}
@@ -65,12 +69,74 @@ def _cache_put_json(table: str, query: str, payload: Any) -> None:
         )
 
 
+_HTTP_HEADERS = {"User-Agent": "PathwayIsle/1.0 (https://pathwayisle.com; educational app)"}
+_LEVEL_LABEL_RE = re.compile(r"\bLevel\s+\d+\s*:?", re.IGNORECASE)
+_google_error_logged = False
+
+
+def _clean_topic_query(query: str) -> str:
+    """'Activation Threshold Machine Learning · Level 1: Perceptron' -> 'Activation Threshold Perceptron'.
+
+    Subject labels and 'Level N:' prefixes drown the topic in Wikipedia/arXiv relevance.
+    """
+    cleaned = _LEVEL_LABEL_RE.sub(" ", query.replace("·", " "))
+    for label in _CITY_LABELS.values():
+        cleaned = re.sub(rf"\b{re.escape(label)}\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or query
+
+
+async def wikipedia_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Keyless fallback for the Reading tab."""
+    query = _clean_topic_query((query or "").strip())
+    if not query:
+        return []
+    cache_key = f"wiki:{query}"
+    cached = _cache_get_json("search_cache", cache_key)
+    if cached:
+        return cached
+
+    params = {
+        "action": "query",
+        "list": "search",
+        "srsearch": query,
+        "srlimit": min(limit, 10),
+        "format": "json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_HTTP_HEADERS, follow_redirects=True) as client:
+            resp = await client.get("https://en.wikipedia.org/w/api.php", params=params)
+            resp.raise_for_status()
+            hits = resp.json().get("query", {}).get("search") or []
+    except (httpx.HTTPError, ValueError) as exc:
+        print(f"[content_apis] Wikipedia search failed for {query!r}: {exc!r}")
+        return []
+
+    results = []
+    for hit in hits[:limit]:
+        title = hit.get("title") or "Wikipedia"
+        snippet = html.unescape(re.sub(r"<[^>]+>", "", hit.get("snippet") or ""))
+        results.append(
+            {
+                "title": title,
+                "link": f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
+                "snippet": snippet,
+                "displayLink": "en.wikipedia.org",
+            }
+        )
+    if results:
+        _cache_put_json("search_cache", cache_key, results)
+    return results
+
+
 async def google_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Google Custom Search, falling back to Wikipedia when CSE is unavailable."""
+    global _google_error_logged
     query = (query or "").strip()
     if not query:
         return []
     cached = _cache_get_json("search_cache", query)
-    if cached is not None:
+    if cached:
         # Ignore stale placeholder entries cached before CSE was configured.
         if not (
             len(cached) == 1
@@ -79,7 +145,7 @@ async def google_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
             return cached
 
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
-        return []
+        return await wikipedia_search(query, limit)
 
     params = {
         "key": GOOGLE_CSE_API_KEY,
@@ -87,11 +153,27 @@ async def google_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
         "q": query,
         "num": min(limit, 10),
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get("https://www.googleapis.com/customsearch/v1", params=params)
-        if resp.status_code != 200:
-            return []
-        items = resp.json().get("items") or []
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get("https://www.googleapis.com/customsearch/v1", params=params)
+    except httpx.HTTPError as exc:
+        print(f"[content_apis] Google search request failed: {exc!r}")
+        return await wikipedia_search(query, limit)
+    if resp.status_code != 200:
+        if not _google_error_logged:
+            _google_error_logged = True
+            try:
+                message = resp.json().get("error", {}).get("message", "")
+            except ValueError:
+                message = resp.text[:200]
+            print(
+                f"[content_apis] Google Custom Search returned {resp.status_code} ({message}); "
+                "using Wikipedia for Reading results."
+            )
+        return await wikipedia_search(query, limit)
+    items = resp.json().get("items") or []
+    if not items:
+        return await wikipedia_search(query, limit)
 
     results = []
     for item in items[:limit]:
@@ -109,30 +191,99 @@ async def google_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
     return results
 
 
+def _openalex_abstract(inverted: dict[str, list[int]] | None) -> str:
+    if not inverted:
+        return ""
+    words = sorted((pos, word) for word, positions in inverted.items() for pos in positions)
+    return " ".join(word for _, word in words)
+
+
+async def openalex_search(query: str, limit: int = 3) -> list[dict[str, Any]]:
+    """Keyless scholarly search — faster and far less rate-limited than arXiv."""
+    query = _clean_topic_query((query or "").strip())
+    if not query:
+        return []
+    cache_key = f"openalex:{query}"
+    cached = _cache_get_json("papers_cache", cache_key)
+    if cached:
+        return cached
+
+    params = {
+        "search": query,
+        "per-page": limit,
+        "filter": "has_abstract:true",
+        "select": "id,title,doi,publication_year,authorships,abstract_inverted_index,primary_location",
+    }
+    if OPENALEX_API_KEY:
+        params["api_key"] = OPENALEX_API_KEY
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers=_HTTP_HEADERS) as client:
+            resp = await client.get("https://api.openalex.org/works", params=params)
+            if resp.status_code == 429:
+                # Burst limit — one short retry is usually enough.
+                await asyncio.sleep(1.5)
+                resp = await client.get("https://api.openalex.org/works", params=params)
+            resp.raise_for_status()
+            works = resp.json().get("results") or []
+    except (httpx.HTTPError, ValueError) as exc:
+        print(f"[content_apis] OpenAlex search failed for {query!r}: {exc!r}")
+        return []
+
+    papers = []
+    for work in works[:limit]:
+        summary = _openalex_abstract(work.get("abstract_inverted_index"))
+        authors = [
+            (a.get("author") or {}).get("display_name") or ""
+            for a in (work.get("authorships") or [])[:6]
+        ]
+        landing = (work.get("primary_location") or {}).get("landing_page_url")
+        year = work.get("publication_year")
+        title = work.get("title") or "Untitled"
+        papers.append(
+            {
+                "title": f"{title} ({year})" if year else title,
+                "authors": [a for a in authors if a],
+                "summary": summary[:400] + ("…" if len(summary) > 400 else ""),
+                "link": work.get("doi") or landing or work.get("id") or "",
+            }
+        )
+    if papers:
+        _cache_put_json("papers_cache", cache_key, papers)
+    return papers
+
+
+async def paper_search(query: str, limit: int = 3) -> list[dict[str, Any]]:
+    return await openalex_search(query, limit) or await arxiv_search(query, limit)
+
+
 async def arxiv_search(query: str, limit: int = 3) -> list[dict[str, Any]]:
     query = (query or "").strip()
     if not query:
         return []
     cached = _cache_get_json("papers_cache", query)
-    if cached is not None:
+    if cached:
         return cached
 
+    terms = re.findall(r"[A-Za-z0-9]+", _clean_topic_query(query))
     params = {
-        "search_query": f"all:{query}",
+        "search_query": " AND ".join(f"all:{t}" for t in terms) or f"all:{query}",
         "start": 0,
         "max_results": limit,
         "sortBy": "relevance",
         "sortOrder": "descending",
     }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.get("https://export.arxiv.org/api/query", params=params)
-        if resp.status_code != 200:
-            _cache_put_json("papers_cache", query, [])
-            return []
-        text = resp.text
+    try:
+        async with httpx.AsyncClient(timeout=12.0, headers=_HTTP_HEADERS, follow_redirects=True) as client:
+            resp = await client.get("https://export.arxiv.org/api/query", params=params)
+            resp.raise_for_status()
+            text = resp.text
+        root = ET.fromstring(text)
+    except (httpx.HTTPError, ET.ParseError) as exc:
+        # arXiv is often slow; a timeout should read as "no papers", not a 500.
+        print(f"[content_apis] arXiv search failed for {query!r}: {exc!r}")
+        return []
 
     ns = {"a": "http://www.w3.org/2005/Atom"}
-    root = ET.fromstring(text)
     papers = []
     for entry in root.findall("a:entry", ns)[:limit]:
         title = re.sub(r"\s+", " ", (entry.findtext("a:title", default="", namespaces=ns) or "").strip())
@@ -157,7 +308,8 @@ async def arxiv_search(query: str, limit: int = 3) -> list[dict[str, Any]]:
                 "link": link,
             }
         )
-    _cache_put_json("papers_cache", query, papers)
+    if papers:
+        _cache_put_json("papers_cache", query, papers)
     return papers
 
 

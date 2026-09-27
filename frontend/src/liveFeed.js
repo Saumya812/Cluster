@@ -1,7 +1,9 @@
 // Connects to the live_server.py WebSocket feed and turns each push event
 // into a brief flash on the matching building plus a corner toast.
 
-const WS_URL = 'ws://localhost:8000/ws'
+// Same origin as the page: Vite proxies /ws in dev; in production the
+// backend serves the site itself (wss:// once the domain has HTTPS).
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 const RECONNECT_DELAY_MS = 5000
 const FLASH_DURATION_MS = 1500
 const TOAST_DURATION_MS = 3000

@@ -42,6 +42,10 @@ let ticker = 0
 let milestoneTimer = 0
 let button = null
 let started = false
+// Hidden tabs and tabs another Cluster tab took over stay silent.
+let suspended = false
+const TAB_ID = Math.random().toString(36).slice(2)
+const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('cluster-music') : null
 
 function desiredKey() {
   if (state.milestone) return 'milestone'
@@ -98,6 +102,10 @@ function startPlayback(audio) {
 function apply(fadeSeconds, volumeSeconds = fadeSeconds) {
   if (!started) return
   const key = desiredKey()
+  if (suspended) {
+    current = key
+    return
+  }
   if (key !== current) {
     if (current) rampTo(audios[current], 0, fadeSeconds, true)
     const next = audios[key]
@@ -112,11 +120,60 @@ function apply(fadeSeconds, volumeSeconds = fadeSeconds) {
 }
 
 function onFirstGesture() {
+  if (suspended) {
+    resume()
+    return
+  }
   if (!blocked || !current) return
   const audio = audios[current]
   audio.volume = 0
   startPlayback(audio)
   rampTo(audio, targetVolume(), UNLOCK_FADE)
+}
+
+function silenceAll(fadeSeconds) {
+  for (const audio of Object.values(audios)) {
+    if (audio.paused) continue
+    if (fadeSeconds > 0) {
+      rampTo(audio, 0, fadeSeconds, true)
+    } else {
+      ramps.delete(audio)
+      audio.volume = 0
+      audio.pause()
+    }
+  }
+}
+
+function suspend(fadeSeconds) {
+  if (suspended) return
+  suspended = true
+  silenceAll(fadeSeconds)
+}
+
+function claim() {
+  channel?.postMessage({ type: 'claim', id: TAB_ID })
+}
+
+function resume() {
+  if (!started || document.visibilityState === 'hidden') return
+  claim()
+  if (!suspended) return
+  suspended = false
+  current = desiredKey()
+  const audio = audios[current]
+  audio.volume = 0
+  startPlayback(audio)
+  rampTo(audio, targetVolume(), UNLOCK_FADE)
+}
+
+function onChannelMessage(event) {
+  if (event.data?.type === 'claim' && event.data.id !== TAB_ID) suspend(MUTE_FADE)
+}
+
+function onVisibilityChange() {
+  // Timers are throttled in background tabs, so a fade would stall; pause outright.
+  if (document.visibilityState === 'hidden') suspend(0)
+  else resume()
 }
 
 function endMilestone() {
@@ -136,6 +193,7 @@ function renderButton() {
 }
 
 function createButton() {
+  document.getElementById('music-toggle')?.remove()
   button = document.createElement('button')
   button.type = 'button'
   button.id = 'music-toggle'
@@ -170,7 +228,15 @@ export const music = {
     for (const type of ['pointerdown', 'keydown', 'touchstart']) {
       document.addEventListener(type, onFirstGesture, { capture: true, passive: true })
     }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', resume)
+    channel?.addEventListener('message', onChannelMessage)
     createButton()
+    if (document.visibilityState === 'hidden') {
+      suspended = true
+    } else {
+      claim()
+    }
     apply(SCENE_FADE)
   },
 
@@ -232,9 +298,26 @@ export const music = {
       ...state,
       current,
       blocked,
+      suspended,
       volumes: Object.fromEntries(
         Object.entries(audios).map(([k, a]) => [k, { vol: +a.volume.toFixed(3), paused: a.paused }]),
       ),
     }
   },
 }
+
+// A hot-reloaded copy of this module must not leave the old tracks playing.
+import.meta.hot?.dispose(() => {
+  started = false
+  suspended = true
+  clearTimeout(milestoneTimer)
+  clearInterval(ticker)
+  for (const audio of Object.values(audios)) audio.pause()
+  for (const type of ['pointerdown', 'keydown', 'touchstart']) {
+    document.removeEventListener(type, onFirstGesture, { capture: true })
+  }
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('focus', resume)
+  channel?.close()
+  button?.remove()
+})

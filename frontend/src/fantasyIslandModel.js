@@ -1,23 +1,60 @@
 /**
- * Load and cache the Sketchfab fantasy island GLB for roadmap instances.
- * Heavy model (~40MB): downsample textures, disable shadows, and instance
+ * Load and cache the roadmap island GLBs (three Sketchfab models, rotated by level).
+ * Heavy models (40–100MB): downsample textures, disable shadows, and instance
  * merged geometry so 10 islands ≠ 10 full scene-graph clones.
  */
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
-const ISLAND_URL = '/assets/fantasy_mystical_island.glb'
 const MAX_TEXTURE_SIZE = 1024
 
-/** @type {THREE.Object3D | null} */
-let template = null
-/** @type {Promise<THREE.Object3D | null> | null} */
-let loadPromise = null
-/** @type {{ box: THREE.Box3, size: THREE.Vector3, surfaceTop: number } | null} */
-let templateBounds = null
-/** @type {{ geometry: THREE.BufferGeometry, material: THREE.Material }[] | null} */
-let bakedParts = null
+/**
+ * Levels 1/4/7/10 → fantasy, 2/5/8 → temple, 3/6/9 → mine house.
+ * `exclude` drops non-island meshes (watermark badges); `alphaCutout` turns
+ * blended foliage cards into alpha-tested, double-sided geometry so they sort
+ * correctly when instanced; `surfaceQuantile` picks the walkable height out of
+ * the top-down height samples (lower = ignore roofs/temples in the middle).
+ */
+export const ISLAND_MODEL_DEFS = [
+  {
+    key: 'fantasy',
+    url: '/assets/fantasy_mystical_island.glb',
+    surfaceQuantile: 0.5,
+    decorate: true,
+  },
+  {
+    key: 'temple',
+    url: '/assets/floating_island_temple_-_hunyuan_3d_vs_supavoxel.glb',
+    exclude: /badge/i,
+    surfaceQuantile: 0.3,
+    decorate: false,
+  },
+  {
+    key: 'mine',
+    url: '/assets/stylized_3d_floating_island_and_mine_house.glb',
+    alphaCutout: true,
+    groundMaterial: /Grass_Mat|Island_Mat/,
+    surfaceQuantile: 0.5,
+    decorate: false,
+  },
+]
+
+/**
+ * @typedef {{
+ *   key: string,
+ *   url: string,
+ *   def: typeof ISLAND_MODEL_DEFS[number],
+ *   template: THREE.Object3D,
+ *   parts: { geometry: THREE.BufferGeometry, material: THREE.Material, name: string }[],
+ *   bounds: { box: THREE.Box3, size: THREE.Vector3, surfaceTop: number },
+ * }} IslandModel
+ */
+
+/** @type {Map<string, IslandModel>} */
+const models = new Map()
+/** @type {Map<string, Promise<IslandModel | null>>} */
+const loadPromises = new Map()
 
 function downsampleTexture(tex, maxSize = MAX_TEXTURE_SIZE) {
   const img = tex?.image
@@ -38,7 +75,8 @@ function downsampleTexture(tex, maxSize = MAX_TEXTURE_SIZE) {
   tex.needsUpdate = true
 }
 
-function simplifyMaterial(src) {
+function simplifyMaterial(src, def) {
+  const cutout = Boolean(def.alphaCutout && src.transparent && src.map)
   // MeshStandard is expensive at island scale; Lambert keeps maps/lighting cheap.
   const mat = new THREE.MeshLambertMaterial({
     color: src.color ? src.color.clone() : new THREE.Color(0xffffff),
@@ -46,11 +84,13 @@ function simplifyMaterial(src) {
     emissive: src.emissive ? src.emissive.clone() : new THREE.Color(0x000000),
     emissiveMap: src.emissiveMap || null,
     emissiveIntensity: src.emissiveIntensity ?? 1,
-    transparent: Boolean(src.transparent),
+    transparent: cutout ? false : Boolean(src.transparent),
+    alphaTest: cutout ? 0.5 : src.alphaTest || 0,
     opacity: src.opacity ?? 1,
-    side: THREE.FrontSide,
+    side: cutout ? THREE.DoubleSide : def.alphaCutout ? src.side : THREE.FrontSide,
     fog: true,
   })
+  mat.name = src.name || ''
   if (mat.map) {
     mat.map.colorSpace = THREE.SRGBColorSpace
     mat.map.anisotropy = 8
@@ -62,10 +102,10 @@ function simplifyMaterial(src) {
  * Bake every mesh in the GLB into as few geometries as possible (one per
  * unique map/color signature) so N islands become N instances × few draws.
  */
-function bakeMergedParts(root) {
+function bakeMergedParts(root, def) {
   root.updateMatrixWorld(true)
   const rootInv = new THREE.Matrix4().copy(root.matrixWorld).invert()
-  /** @type {Map<string, { geos: THREE.BufferGeometry[], material: THREE.Material }>} */
+  /** @type {Map<string, { geos: THREE.BufferGeometry[], material: THREE.Material, name: string }>} */
   const buckets = new Map()
 
   root.traverse((obj) => {
@@ -83,7 +123,7 @@ function bakeMergedParts(root) {
 
     let bucket = buckets.get(key)
     if (!bucket) {
-      bucket = { geos: [], material: simplifyMaterial(srcMat) }
+      bucket = { geos: [], material: simplifyMaterial(srcMat, def), name: srcMat.name || '' }
       buckets.set(key, bucket)
     }
 
@@ -98,25 +138,46 @@ function bakeMergedParts(root) {
     }
     geo.morphAttributes = {}
     if (!geo.getAttribute('normal')) geo.computeVertexNormals()
+    if (!geo.getAttribute('uv')) {
+      geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 2), 2))
+    }
     bucket.geos.push(geo)
   })
 
   const parts = []
   for (const bucket of buckets.values()) {
     if (!bucket.geos.length) continue
-    const merged = mergeGeometries(bucket.geos, false)
-    for (const g of bucket.geos) g.dispose()
+    // mergeGeometries needs all-indexed or all-non-indexed inputs.
+    const allIndexed = bucket.geos.every((g) => g.index)
+    const geos = allIndexed ? bucket.geos : bucket.geos.map((g) => (g.index ? g.toNonIndexed() : g))
+    const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false)
+    if (geos.length > 1) {
+      for (const g of new Set([...bucket.geos, ...geos])) g.dispose()
+    }
     if (!merged) continue
     merged.computeBoundingSphere()
-    parts.push({ geometry: merged, material: bucket.material })
+    parts.push({ geometry: merged, material: bucket.material, name: bucket.name })
   }
 
-  // Prefer a single draw call when merges collapse to one bucket.
-  console.log(`[island] baked ${parts.length} merged mesh part(s) for instancing`)
+  console.log(`[island:${def.key}] baked ${parts.length} merged mesh part(s) for instancing`)
   return parts
 }
 
-function prepareTemplate(root) {
+function stripExcluded(root, pattern) {
+  if (!pattern) return
+  const drop = []
+  root.traverse((obj) => {
+    if (!obj.isMesh) return
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+    const names = [obj.name, obj.parent?.name, ...mats.map((m) => m?.name)]
+    if (names.some((n) => n && pattern.test(n))) drop.push(obj)
+  })
+  for (const obj of drop) obj.removeFromParent()
+}
+
+/** @returns {IslandModel} */
+function prepareModel(root, def) {
+  stripExcluded(root, def.exclude)
   root.updateMatrixWorld(true)
   root.traverse((obj) => {
     if (!obj.isMesh) return
@@ -141,43 +202,90 @@ function prepareTemplate(root) {
       }
     }
   })
-  bakedParts = bakeMergedParts(root)
+  const parts = bakeMergedParts(root, def)
   // Bounds must be in the same root-local space as the baked instance geometry,
   // and ignore faint FX (light beams, auras) that extend far above the ground.
-  const solidParts = bakedParts.filter(({ material }) => (material.opacity ?? 1) >= 0.9)
+  const solidParts = parts.filter(({ material }) => (material.opacity ?? 1) >= 0.9)
   const box = new THREE.Box3()
   for (const { geometry } of solidParts) {
     if (!geometry.boundingBox) geometry.computeBoundingBox()
     box.union(geometry.boundingBox)
   }
   if (box.isEmpty()) box.setFromObject(root)
+
+  // Center the footprint on the island anchor so labels/bridges sit mid-island.
+  const cx = (box.min.x + box.max.x) / 2
+  const cz = (box.min.z + box.max.z) / 2
+  for (const { geometry } of parts) {
+    geometry.translate(-cx, 0, -cz)
+    geometry.computeBoundingBox()
+    geometry.computeBoundingSphere()
+  }
+  box.translate(new THREE.Vector3(-cx, 0, -cz))
+  const pivot = new THREE.Group()
+  pivot.name = `island-template-${def.key}`
+  root.position.set(-cx, 0, -cz)
+  pivot.add(root)
+
   const size = new THREE.Vector3()
   box.getSize(size)
-  templateBounds = { box, size, surfaceTop: measureSurfaceTop(solidParts, box) }
-  return root
+  const groundParts = def.groundMaterial
+    ? solidParts.filter((p) => def.groundMaterial.test(p.name))
+    : solidParts
+  const surfaceTop = measureSurfaceTop(groundParts.length ? groundParts : solidParts, box, def)
+  return {
+    key: def.key,
+    url: def.url,
+    def,
+    template: pivot,
+    parts,
+    bounds: { box, size, surfaceTop },
+  }
+}
+
+const RAYCAST_TRI_LIMIT = 200_000
+const SURFACE_STEPS = 7
+
+function triangleCount(parts) {
+  let tris = 0
+  for (const { geometry } of parts) {
+    tris += (geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3
+  }
+  return tris
 }
 
 /**
- * Height of the walkable top: median of downward ray hits over the inner
- * footprint, so trees/spires poking up don't count as ground.
+ * Height of the walkable top over the inner footprint, so trees/spires poking
+ * up don't count as ground. Small models are ray-cast; dense scans use a
+ * per-cell max-vertex height grid (ray-casting 1M+ tris would stall the tab).
  */
-function measureSurfaceTop(parts, box) {
-  const meshes = parts.map(
-    ({ geometry }) => new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide })),
-  )
+function measureSurfaceTop(parts, box, def) {
   const center = new THREE.Vector3()
   const size = new THREE.Vector3()
   box.getCenter(center)
   box.getSize(size)
+  const hits =
+    triangleCount(parts) > RAYCAST_TRI_LIMIT
+      ? sampleHeightGrid(parts, center, size)
+      : sampleRaycast(parts, box, center, size)
+  if (!hits.length) return box.max.y
+  hits.sort((a, b) => a - b)
+  const q = def.surfaceQuantile ?? 0.5
+  return hits[Math.min(hits.length - 1, Math.floor(hits.length * q))]
+}
+
+function sampleRaycast(parts, box, center, size) {
+  const meshes = parts.map(
+    ({ geometry }) => new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide })),
+  )
   const raycaster = new THREE.Raycaster()
   const down = new THREE.Vector3(0, -1, 0)
   const origin = new THREE.Vector3()
   const hits = []
-  const STEPS = 7
-  for (let ix = 0; ix < STEPS; ix++) {
-    for (let iz = 0; iz < STEPS; iz++) {
-      const fx = (ix / (STEPS - 1) - 0.5) * 0.5
-      const fz = (iz / (STEPS - 1) - 0.5) * 0.5
+  for (let ix = 0; ix < SURFACE_STEPS; ix++) {
+    for (let iz = 0; iz < SURFACE_STEPS; iz++) {
+      const fx = (ix / (SURFACE_STEPS - 1) - 0.5) * 0.5
+      const fz = (iz / (SURFACE_STEPS - 1) - 0.5) * 0.5
       origin.set(center.x + fx * size.x, box.max.y + 1, center.z + fz * size.z)
       raycaster.set(origin, down)
       const hit = raycaster.intersectObjects(meshes, false)[0]
@@ -185,37 +293,67 @@ function measureSurfaceTop(parts, box) {
     }
   }
   for (const m of meshes) m.material.dispose()
-  if (!hits.length) return box.max.y
-  hits.sort((a, b) => a - b)
-  return hits[Math.floor(hits.length / 2)]
+  return hits
+}
+
+function sampleHeightGrid(parts, center, size) {
+  const cells = new Float32Array(SURFACE_STEPS * SURFACE_STEPS).fill(-Infinity)
+  const halfX = size.x * 0.25
+  const halfZ = size.z * 0.25
+  for (const { geometry } of parts) {
+    const pos = geometry.attributes.position
+    for (let i = 0; i < pos.count; i++) {
+      const dx = pos.getX(i) - center.x
+      const dz = pos.getZ(i) - center.z
+      if (Math.abs(dx) > halfX || Math.abs(dz) > halfZ) continue
+      const ix = Math.min(SURFACE_STEPS - 1, Math.floor(((dx + halfX) / (2 * halfX)) * SURFACE_STEPS))
+      const iz = Math.min(SURFACE_STEPS - 1, Math.floor(((dz + halfZ) / (2 * halfZ)) * SURFACE_STEPS))
+      const k = ix * SURFACE_STEPS + iz
+      const y = pos.getY(i)
+      if (y > cells[k]) cells[k] = y
+    }
+  }
+  return Array.from(cells).filter(Number.isFinite)
 }
 
 /**
- * Grounding metrics for a given uniform scale (island top near surfaceY).
+ * Uniform scale that makes this model's footprint `targetWidth` world units.
+ * @param {IslandModel} model
+ * @param {number} targetWidth
+ */
+export function islandScaleFor(model, targetWidth) {
+  const { size } = model.bounds
+  return targetWidth / Math.max(size.x, size.z, 1e-6)
+}
+
+/**
+ * Grounding metrics for a model at a given uniform scale (island top near surfaceY).
+ * @param {IslandModel | null} model
  * @param {number} scale
  * @param {number} surfaceY
  */
-export function getIslandPlacementMetrics(scale, surfaceY = 1.32) {
-  if (!templateBounds) {
-    return { yLift: 0, topR: 12, surfaceY, size: new THREE.Vector3(20, 20, 20) }
+export function getIslandPlacementMetrics(model, scale, surfaceY = 1.32) {
+  if (!model) {
+    return { yLift: 0, topR: 12, surfaceY, scale, size: new THREE.Vector3(20, 20, 20) }
   }
-  const { size, surfaceTop } = templateBounds
+  const { size, surfaceTop } = model.bounds
   const yLift = surfaceY - surfaceTop * scale
   const topR = Math.max(Math.max(size.x, size.z) * scale * 0.42, 8)
   return {
     yLift,
     topR,
     surfaceY,
+    scale,
     size: size.clone().multiplyScalar(scale),
   }
 }
 
 /**
  * Deep-clone fallback (used only if instancing unavailable / ?islands=clone).
- * @param {THREE.Object3D} source
+ * @param {IslandModel} model
  */
-export function cloneIslandModel(source) {
-  const clone = source.clone(true)
+export function cloneIslandModel(model) {
+  const clone = model.template.clone(true)
   clone.traverse((obj) => {
     if (!obj.isMesh) return
     obj.castShadow = false
@@ -246,35 +384,28 @@ export function darkenIslandMaterials(root, factor = 0.4) {
 }
 
 /**
- * Few InstancedMeshes (ideally 1) for all island copies.
+ * Few InstancedMeshes per model for all island copies that use it.
  * @param {THREE.Object3D} parent
- * @param {THREE.Object3D} source
+ * @param {IslandModel} model
  * @param {number} count
  */
-export function createInstancedIslandBodies(parent, source, count) {
-  const partsSrc =
-    bakedParts && bakedParts.length
-      ? bakedParts
-      : bakeMergedParts(source)
-
+export function createInstancedIslandBodies(parent, model, count) {
   const parts = []
   const tmpColor = new THREE.Color()
-  const identity = new THREE.Matrix4()
 
-  for (let i = 0; i < partsSrc.length; i++) {
-    const { geometry, material } = partsSrc[i]
+  model.parts.forEach(({ geometry, material }, i) => {
     const baseMat = material.clone()
     const mesh = new THREE.InstancedMesh(geometry, baseMat, count)
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     mesh.castShadow = false
     mesh.receiveShadow = false
     mesh.frustumCulled = false
-    mesh.name = `island-instance-${i}`
+    mesh.name = `island-instance-${model.key}-${i}`
     parent.add(mesh)
     const baseColor = baseMat.color ? baseMat.color.clone() : new THREE.Color(0xffffff)
-    // Geometry already in root-local space — world matrix is the island pose.
-    parts.push({ mesh, local: identity, baseColor })
-  }
+    // Geometry already in centered root-local space — world matrix is the island pose.
+    parts.push({ mesh, baseColor })
+  })
 
   return {
     partCount: parts.length,
@@ -296,39 +427,67 @@ export function createInstancedIslandBodies(parent, source, count) {
   }
 }
 
-/**
- * @param {(fraction: number, label?: string) => void} [onProgress]
- * @returns {Promise<THREE.Object3D | null>}
- */
-export async function loadFantasyIslandModel(onProgress) {
-  if (template) return template
-  if (loadPromise) return loadPromise
+function loadIslandModel(def, onProgress) {
+  const cached = models.get(def.key)
+  if (cached) return Promise.resolve(cached)
+  const pending = loadPromises.get(def.key)
+  if (pending) return pending
 
-  loadPromise = (async () => {
-    onProgress?.(0.1, 'Loading island model…')
-    const loader = new GLTFLoader()
-    const gltf = await new Promise((resolve, reject) => {
-      loader.load(
-        ISLAND_URL,
-        resolve,
-        (evt) => {
-          if (evt.total) onProgress?.(0.1 + 0.8 * (evt.loaded / evt.total), 'Loading island model…')
-        },
-        reject,
-      )
+  const promise = new GLTFLoader()
+    .loadAsync(def.url, (evt) => {
+      if (evt.total) onProgress?.(evt.loaded / evt.total)
     })
-    template = prepareTemplate(gltf.scene)
-    onProgress?.(1, 'Island model ready')
-    return template
-  })().catch((err) => {
-    console.warn('[island] failed to load fantasy_mystical_island.glb', err)
-    loadPromise = null
-    return null
-  })
-
-  return loadPromise
+    .then((gltf) => {
+      const model = prepareModel(gltf.scene, def)
+      models.set(def.key, model)
+      onProgress?.(1)
+      return model
+    })
+    .catch((err) => {
+      console.warn(`[island] failed to load ${def.url}`, err)
+      loadPromises.delete(def.key)
+      return null
+    })
+  loadPromises.set(def.key, promise)
+  return promise
 }
 
-export function getCachedIslandModel() {
-  return template
+/**
+ * Load all island models in parallel. Slots that fail resolve to null.
+ * @param {(fraction: number, label?: string) => void} [onProgress]
+ * @returns {Promise<(IslandModel | null)[]>}
+ */
+export function loadIslandModels(onProgress) {
+  const fractions = ISLAND_MODEL_DEFS.map(() => 0)
+  const report = () => {
+    const avg = fractions.reduce((a, b) => a + b, 0) / fractions.length
+    onProgress?.(0.05 + 0.9 * avg, 'Loading island models…')
+  }
+  onProgress?.(0.05, 'Loading island models…')
+  return Promise.all(
+    ISLAND_MODEL_DEFS.map((def, i) =>
+      loadIslandModel(def, (f) => {
+        fractions[i] = f
+        report()
+      }),
+    ),
+  ).then((list) => {
+    onProgress?.(1, 'Island models ready')
+    return list
+  })
+}
+
+/**
+ * Model for a level (1-based), falling back to any loaded model.
+ * @param {(IslandModel | null)[]} list
+ * @param {number} levelNum
+ */
+export function islandModelForLevel(list, levelNum) {
+  if (!list?.length) return null
+  const n = Math.max(1, levelNum || 1)
+  return list[(n - 1) % list.length] || list.find(Boolean) || null
+}
+
+export function getCachedIslandModels() {
+  return ISLAND_MODEL_DEFS.map((def) => models.get(def.key) || null)
 }

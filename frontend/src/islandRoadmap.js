@@ -8,13 +8,17 @@ import {
   darkenIslandMaterials,
   createInstancedIslandBodies,
   getIslandPlacementMetrics,
+  islandModelForLevel,
+  islandScaleFor,
 } from './fantasyIslandModel.js'
 
 const ISLAND_GAP_Y = 42
 const TOP_RADIUS = 22
 const ZIGZAG_X = 40
 const SURFACE_Y = 1.32
-const ISLAND_MODEL_SCALE = 0.05
+// Footprint every island model is normalized to (fantasy GLB at its original 0.05 scale).
+const ISLAND_TARGET_WIDTH = 48
+const FIREFLY_COLOR = 0xd4ff5a
 
 function mulberry32(seed) {
   let a = seed >>> 0
@@ -268,30 +272,95 @@ function decorateWithKenney(parent, topR, surfaceY, locked, rng, assets, { trees
  * Place a cloned GLB island mesh into `group` (fallback when instancing is off).
  * @returns {{ topR: number, surfaceY: number } | null}
  */
-function addGlbIslandBody(group, islandTemplate, locked, rng) {
-  if (!islandTemplate) return null
+function addGlbIslandBody(group, islandModel, locked, rng, metrics) {
+  if (!islandModel || !metrics) return null
 
-  const model = cloneIslandModel(islandTemplate)
+  const model = cloneIslandModel(islandModel)
   model.name = 'island-glb'
-  model.scale.set(ISLAND_MODEL_SCALE, ISLAND_MODEL_SCALE, ISLAND_MODEL_SCALE)
+  model.scale.setScalar(metrics.scale)
   model.rotation.y = rng() * Math.PI * 2
-  model.updateMatrixWorld(true)
-
-  const box = new THREE.Box3().setFromObject(model)
-  model.position.y += SURFACE_Y - box.max.y
-  model.updateMatrixWorld(true)
+  model.position.y = metrics.yLift
 
   if (locked) {
     darkenIslandMaterials(model, 0.4)
   }
 
   group.add(model)
+  return { topR: metrics.topR, surfaceY: metrics.surfaceY }
+}
 
-  const placed = new THREE.Box3().setFromObject(model)
-  const placedSize = new THREE.Vector3()
-  placed.getSize(placedSize)
-  const topR = Math.max(placedSize.x, placedSize.z) * 0.42
-  return { topR: Math.max(topR, 8), surfaceY: placed.max.y }
+function createFireflyMaterial() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uColor: { value: new THREE.Color(FIREFLY_COLOR) },
+      uSize: { value: 2.6 },
+      uMinPx: { value: 2.8 * dpr },
+      uScale: { value: window.innerHeight * 0.5 * dpr },
+    },
+    vertexShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uSize;
+      uniform float uMinPx;
+      uniform float uScale;
+      attribute float aPhase;
+      attribute float aBright;
+      varying float vAlpha;
+      void main() {
+        vec3 p = position;
+        float t = uTime * 0.35 + aPhase * 6.2831;
+        p.x += sin(t * 1.3 + aPhase * 11.0) * 1.8;
+        p.y += sin(t * 0.9 + aPhase * 5.0) * 1.3;
+        p.z += cos(t * 1.1 + aPhase * 7.0) * 1.8;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = max(uMinPx, uSize * uScale / -mv.z);
+        vAlpha = (0.45 + 0.55 * sin(uTime * 2.1 + aPhase * 23.0)) * aBright;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor;
+      varying float vAlpha;
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        if (d > 0.5) discard;
+        float a = smoothstep(0.5, 0.0, d);
+        gl_FragColor = vec4(uColor * (0.9 + 0.8 * a), a * max(vAlpha, 0.0));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+}
+
+/** 20–30 slow glowing dots drifting around one island (motion runs in the shader). */
+function createFireflies(material, topR, surfaceY, locked, seed) {
+  const rng = mulberry32(seed)
+  const count = 20 + Math.floor(rng() * 11)
+  const positions = new Float32Array(count * 3)
+  const phases = new Float32Array(count)
+  const bright = new Float32Array(count)
+  for (let i = 0; i < count; i++) {
+    const a = rng() * Math.PI * 2
+    const r = topR * (0.45 + rng() * 0.8)
+    positions[i * 3] = Math.cos(a) * r
+    positions[i * 3 + 1] = surfaceY + 2 + rng() * 16
+    positions[i * 3 + 2] = Math.sin(a) * r
+    phases[i] = rng()
+    bright[i] = (locked ? 0.4 : 1) * (0.7 + rng() * 0.3)
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1))
+  geometry.setAttribute('aBright', new THREE.BufferAttribute(bright, 1))
+  geometry.computeBoundingSphere()
+  geometry.boundingSphere.radius += 4
+  const points = new THREE.Points(geometry, material)
+  points.name = 'island-fireflies'
+  points.renderOrder = 5
+  return points
 }
 
 function buildProceduralIslandBody(group, locked, rng, shape, topR) {
@@ -375,7 +444,7 @@ function buildFantasyIsland(
   state,
   index,
   assets = null,
-  islandTemplate = null,
+  islandModel = null,
   { skipGlbBody = false, metrics = null } = {},
 ) {
   const group = new THREE.Group()
@@ -389,27 +458,33 @@ function buildFantasyIsland(
   const scaleXZ = shape === 1 ? 0.78 : shape === 0 ? 1.35 : 1.05
   let topR = TOP_RADIUS * scaleXZ
   let surfaceY = SURFACE_Y
+  // Temple / mine-house models already carry their own buildings and foliage.
+  const decorateGlb = islandModel?.def?.decorate !== false
 
   if (skipGlbBody && metrics) {
     topR = metrics.topR
     surfaceY = metrics.surfaceY
-    decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
-      trees: true,
-      rocks: true,
-      buildings: false,
-      shape,
-    })
-  } else {
-    const glb = addGlbIslandBody(group, islandTemplate, locked, rng)
-    if (glb) {
-      topR = glb.topR
-      surfaceY = glb.surfaceY
+    if (decorateGlb) {
       decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
         trees: true,
         rocks: true,
         buildings: false,
         shape,
       })
+    }
+  } else {
+    const glb = addGlbIslandBody(group, islandModel, locked, rng, metrics)
+    if (glb) {
+      topR = glb.topR
+      surfaceY = glb.surfaceY
+      if (decorateGlb) {
+        decorateWithKenney(group, topR, surfaceY, locked, rng, assets, {
+          trees: true,
+          rocks: true,
+          buildings: false,
+          shape,
+        })
+      }
     } else {
       const body = buildProceduralIslandBody(group, locked, rng, shape, topR)
       topR = body.topR
@@ -486,6 +561,7 @@ function buildFantasyIsland(
     index,
     theme,
     topRadius: topR,
+    surfaceY,
   }
 
   group.traverse((obj) => {
@@ -691,7 +767,7 @@ export function createIslandRoadmap(scene, opts) {
     levels = [],
     lastLevelId = null,
     assets = null,
-    islandModel = null,
+    islandModels = [],
     // Baseline perf path: deep-clone the GLB once per island (?islands=clone).
     forceCloneIslands = false,
   } = opts
@@ -722,36 +798,54 @@ export function createIslandRoadmap(scene, opts) {
 
   root.add(new THREE.AmbientLight(0xffe8d0, 0.4))
 
-  const useInstances = Boolean(islandModel) && levels.length > 0 && !forceCloneIslands
-  const metrics = useInstances
-    ? getIslandPlacementMetrics(ISLAND_MODEL_SCALE, SURFACE_Y)
-    : null
-  const instanced = useInstances
-    ? createInstancedIslandBodies(root, islandModel, levels.length)
-    : null
+  // One batch per island model: its own normalized scale, grounding and instanced body.
+  const modelForLevel = levels.map((level, i) => islandModelForLevel(islandModels, level.level || i + 1))
+  /** @type {Map<string, { model: object, scale: number, metrics: object, levels: object[], slotOf: Map<number, number>, instanced: object | null }>} */
+  const batches = new Map()
+  modelForLevel.forEach((model, i) => {
+    if (!model) return
+    let batch = batches.get(model.key)
+    if (!batch) {
+      const scale = islandScaleFor(model, ISLAND_TARGET_WIDTH)
+      batch = {
+        model,
+        scale,
+        metrics: getIslandPlacementMetrics(model, scale, SURFACE_Y),
+        levels: [],
+        slotOf: new Map(),
+        instanced: null,
+      }
+      batches.set(model.key, batch)
+    }
+    batch.slotOf.set(i, batch.levels.length)
+    batch.levels.push(levels[i])
+  })
+
+  const useInstances = batches.size > 0 && levels.length > 0 && !forceCloneIslands
   const instanceMatrix = new THREE.Matrix4()
   const instancePos = new THREE.Vector3()
   const instanceQuat = new THREE.Quaternion()
-  const instanceScale = new THREE.Vector3(
-    ISLAND_MODEL_SCALE,
-    ISLAND_MODEL_SCALE,
-    ISLAND_MODEL_SCALE,
-  )
+  const instanceScale = new THREE.Vector3()
   const upAxis = new THREE.Vector3(0, 1, 0)
 
   if (useInstances) {
-    console.log(
-      `[roadmap] instanced islands: ${levels.length} islands × ${instanced.partCount} merged draw call(s)`,
-    )
-    // Instanced GLB bodies are the thing you see — make them clickable by instanceId.
-    for (const mesh of instanced.meshes) {
-      mesh.userData.kind = 'islandInstances'
-      mesh.userData.levels = levels
-      clickables.push(mesh)
+    for (const batch of batches.values()) {
+      batch.instanced = createInstancedIslandBodies(root, batch.model, batch.levels.length)
+      console.log(
+        `[roadmap] instanced ${batch.model.key}: ${batch.levels.length} island(s) × ${batch.instanced.partCount} draw call(s) @ scale ${batch.scale.toFixed(3)}`,
+      )
+      // Instanced GLB bodies are the thing you see — make them clickable by instanceId.
+      for (const mesh of batch.instanced.meshes) {
+        mesh.userData.kind = 'islandInstances'
+        mesh.userData.levels = batch.levels
+        clickables.push(mesh)
+      }
     }
-  } else if (forceCloneIslands && islandModel) {
+  } else if (forceCloneIslands && batches.size) {
     console.log(`[roadmap] clone baseline: ${levels.length} full GLB clones`)
   }
+
+  const fireflyMaterial = createFireflyMaterial()
 
   levels.forEach((level, i) => {
     const theme = themeForLevel(level.level || i + 1)
@@ -760,12 +854,15 @@ export function createIslandRoadmap(scene, opts) {
     const rng = mulberry32(i * 9973 + (level.level || 1) * 131)
     const rotY = rng() * Math.PI * 2
     const locked = (level.state || 'locked') === 'locked'
+    const model = modelForLevel[i]
+    const batch = model ? batches.get(model.key) : null
 
-    if (instanced && metrics) {
-      instancePos.set(off.x, y + metrics.yLift, off.z)
+    if (batch?.instanced) {
+      instancePos.set(off.x, y + batch.metrics.yLift, off.z)
       instanceQuat.setFromAxisAngle(upAxis, rotY)
+      instanceScale.setScalar(batch.scale)
       instanceMatrix.compose(instancePos, instanceQuat, instanceScale)
-      instanced.setInstance(i, instanceMatrix, locked)
+      batch.instanced.setInstance(batch.slotOf.get(i), instanceMatrix, locked)
     }
 
     const island = buildFantasyIsland(
@@ -774,10 +871,8 @@ export function createIslandRoadmap(scene, opts) {
       level.state || 'locked',
       i,
       assets,
-      useInstances ? null : islandModel,
-      useInstances
-        ? { skipGlbBody: true, metrics }
-        : { skipGlbBody: false, metrics: null },
+      model,
+      { skipGlbBody: Boolean(batch?.instanced), metrics: batch?.metrics ?? null },
     )
     island.position.set(off.x, y, off.z)
     root.add(island)
@@ -785,6 +880,15 @@ export function createIslandRoadmap(scene, opts) {
     island.traverse((obj) => {
       if (obj.isMesh) clickables.push(obj)
     })
+    island.add(
+      createFireflies(
+        fireflyMaterial,
+        island.userData.topRadius,
+        island.userData.surfaceY,
+        locked,
+        i * 7919 + 17,
+      ),
+    )
     islandEntries.push({ level, island, y, off, theme })
 
     if (lastLevelId && level.id === lastLevelId) {
@@ -802,7 +906,7 @@ export function createIslandRoadmap(scene, opts) {
     }
   })
 
-  instanced?.finalize()
+  for (const batch of batches.values()) batch.instanced?.finalize()
 
   let pulseT = 0
   let visible = true
@@ -857,6 +961,7 @@ export function createIslandRoadmap(scene, opts) {
     update(_time, delta) {
       if (!visible) return
       pulseT += delta
+      fireflyMaterial.uniforms.uTime.value = pulseT
       for (const entry of islandEntries) {
         const glow = entry.island.userData.edgeGlow
         if (glow?.material) {

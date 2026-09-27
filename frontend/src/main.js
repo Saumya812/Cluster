@@ -15,7 +15,7 @@ import { CITY_LABELS } from './cities.js'
 import { topicsForLevel } from './levelCurriculum.js'
 import { createIslandRoadmap, animateCameraTo } from './islandRoadmap.js'
 import { loadKenneyAssets } from './kenneyAssets.js'
-import { loadFantasyIslandModel } from './fantasyIslandModel.js'
+import { loadIslandModels } from './fantasyIslandModel.js'
 import { createDistrictPicker } from './districtPicker.js'
 import { createTopicPanel } from './topicPanel.js'
 import { createBuildingSidePanel } from './buildingSidePanel.js'
@@ -1243,6 +1243,16 @@ if (import.meta.env.DEV) {
     await saveRoadmapPrefs(activeCityId, { last_level_id })
     return mlCity?.theme?.name
   }
+  window.__clusterScene = scene
+  // Orbit the roadmap camera around one island (keeps the current viewing angle).
+  window.__clusterRoadmapFocus = (n, dist = 120) => {
+    const entry = islandRoadmap?.islandEntries?.find((e) => e.level.level === n)
+    if (!entry) return false
+    roadmapCamTarget.set(entry.off.x, entry.y + 6, entry.off.z)
+    roadmapSpherical.radius = dist
+    applyRoadmapCamera()
+    return true
+  }
 }
 
 window.__clusterCityDebug = () => {
@@ -1519,13 +1529,13 @@ async function loadIslandRoadmap(cityId) {
     console.warn('[roadmap] Kenney assets unavailable, using procedural fallback', err)
   }
 
-  let islandModel = null
+  let islandModels = []
   try {
-    islandModel = await loadFantasyIslandModel((fraction, label) => {
-      setLoadingProgress(0.4 + fraction * 0.15, label || 'Loading island model…')
+    islandModels = await loadIslandModels((fraction, label) => {
+      setLoadingProgress(0.4 + fraction * 0.15, label || 'Loading island models…')
     })
   } catch (err) {
-    console.warn('[roadmap] Island GLB unavailable, using procedural islands', err)
+    console.warn('[roadmap] Island GLBs unavailable, using procedural islands', err)
   }
 
   setLoadingProgress(0.55, 'Loading ' + cityLabel + ' islands…')
@@ -1559,7 +1569,7 @@ async function loadIslandRoadmap(cityId) {
     levels: payload.levels || [],
     lastLevelId: focusLevelId,
     assets: kenneyAssets,
-    islandModel,
+    islandModels,
     forceCloneIslands,
   })
   window.__clusterIslandMode = forceCloneIslands ? 'clone' : 'instanced'
@@ -2135,11 +2145,11 @@ setCityLightsVisible(false)
 setLoadingProgress(1, 'Ready')
 bootGlobe()
 
-// Warm Kenney nature/city kits + island GLB in the background so the first roadmap is faster
+// Warm Kenney nature/city kits + all island GLBs in the background so the first roadmap is faster
 void loadKenneyAssets(() => {}).catch((err) => {
   console.warn('[boot] Kenney preload skipped', err)
 })
-void loadFantasyIslandModel(() => {}).catch((err) => {
+void loadIslandModels(() => {}).catch((err) => {
   console.warn('[boot] Island GLB preload skipped', err)
 })
 
@@ -2208,6 +2218,20 @@ if (import.meta.env.DEV) {
   // Hidden webviews pause requestAnimationFrame; lets automation render frames anyway.
   window.__clusterRenderFrames = (n = 1) => {
     for (let i = 0; i < n; i++) renderFrame()
+  }
+  // Render one frame from an arbitrary viewpoint (flight camera untouched) → JPEG data URL.
+  window.__clusterSnapFrom = (pos, look, width = 1100) => {
+    const cam = camera.clone()
+    cam.position.set(pos[0], pos[1], pos[2])
+    cam.lookAt(look[0], look[1], look[2])
+    cam.updateMatrixWorld()
+    renderer.render(scene, cam)
+    const src = renderer.domElement
+    const out = document.createElement('canvas')
+    out.width = width
+    out.height = Math.round((width * src.height) / src.width)
+    out.getContext('2d').drawImage(src, 0, 0, out.width, out.height)
+    return out.toDataURL('image/jpeg', 0.85)
   }
 }
 

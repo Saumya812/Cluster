@@ -32,6 +32,8 @@ const ROCK_FILES = [
   'rock_largeC.glb',
 ]
 
+const STATUE_FILES = ['statue_obelisk.glb', 'statue_column.glb']
+
 const BUILDING_FILES = [
   'building-a.glb',
   'building-b.glb',
@@ -49,7 +51,7 @@ const BUILDING_FILES = [
   'building-n.glb',
 ]
 
-/** @type {null | { trees: THREE.Object3D[], rocks: THREE.Object3D[], buildings: THREE.Object3D[], cityTexture: THREE.Texture }} */
+/** @type {null | { trees: THREE.Object3D[], rocks: THREE.Object3D[], buildings: THREE.Object3D[], statues: THREE.Object3D[], cityTexture: THREE.Texture }} */
 let cache = null
 /** @type {Promise<typeof cache> | null} */
 let loadPromise = null
@@ -131,7 +133,7 @@ export async function loadKenneyAssets(onProgress) {
     })
     report(0.15, 'Building your world…')
 
-    const total = TREE_FILES.length + ROCK_FILES.length + BUILDING_FILES.length
+    const total = TREE_FILES.length + ROCK_FILES.length + STATUE_FILES.length + BUILDING_FILES.length
     let done = 0
     const bump = () => {
       done += 1
@@ -160,6 +162,17 @@ export async function loadKenneyAssets(onProgress) {
       bump()
     }
 
+    const statues = []
+    for (const file of STATUE_FILES) {
+      try {
+        const scene = await loadOne(loader, NATURE_BASE + file)
+        statues.push(prepareTemplate(scene, 1))
+      } catch (err) {
+        console.warn('[kenney] statue failed', file, err)
+      }
+      bump()
+    }
+
     const buildings = []
     for (const file of BUILDING_FILES) {
       try {
@@ -172,7 +185,7 @@ export async function loadKenneyAssets(onProgress) {
       bump()
     }
 
-    cache = { trees, rocks, buildings, cityTexture }
+    cache = { trees, rocks, buildings, statues, cityTexture }
     report(1, 'Building your world…')
     return cache
   })()

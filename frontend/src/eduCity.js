@@ -2,7 +2,9 @@
  * Shared educational city layout — wide flyable streets, dense blocks, tapered Growth Tower.
  */
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { createWindowTextures, hashStringToSeed } from './windowTexture.js'
+import { getKenneyAssets, placeOnSurface } from './kenneyAssets.js'
 import { buildAmusementPark } from './amusementPark.js'
 import { buildSunsetSky } from './islandRoadmap.js'
 import {
@@ -282,6 +284,19 @@ function addStreetLife(root, {
     })
   }
 
+  // A lamp on every street/avenue corner (unless a curb lamp already stands there)
+  const cornerOff = roadW * 0.5 + 2.2
+  for (const sz of streetZs) {
+    for (const ax of avenueXs) {
+      for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const x = ax + dx * cornerOff
+        const z = sz + dz * cornerOff
+        if (lampPositions.some(([lx, lz]) => Math.hypot(lx - x, lz - z) < 5)) continue
+        lampPositions.push([x, z])
+      }
+    }
+  }
+
   // --- Instanced trees (larger so they read from flight altitude) ---
   const trunkGeo = new THREE.CylinderGeometry(0.35, 0.48, 3.2, 6)
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1e, roughness: 1 })
@@ -470,8 +485,20 @@ function addStreetLife(root, {
   syncCars()
   root.add(chassisMesh, cabinMesh, wheelMesh)
 
+  const benchCount = addBenches(root, {
+    streetZs,
+    avenueXs,
+    cityHalfX,
+    cityHalfZ,
+    plazaRadius,
+    roadW,
+    cell,
+    treePositions,
+    lampPositions,
+  })
+
   console.log(
-    `[edu city] street life: ${treePositions.length} trees · ${lampPositions.length} lamps · ${CAR_COUNT} cars`,
+    `[edu city] street life: ${treePositions.length} trees · ${lampPositions.length} lamps · ${benchCount} benches · ${CAR_COUNT} cars`,
   )
 
   return {
@@ -483,6 +510,120 @@ function addStreetLife(root, {
       }
       syncCars()
     },
+  }
+}
+
+/** Low-poly dark-wood benches facing the road along every sidewalk. Returns the count. */
+function addBenches(root, {
+  streetZs,
+  avenueXs,
+  cityHalfX,
+  cityHalfZ,
+  plazaRadius,
+  roadW,
+  cell,
+  treePositions,
+  lampPositions,
+}) {
+  const spots = []
+  const benchOff = roadW * 0.5 + 3.8
+  const clear = (x, z) =>
+    !treePositions.some(([tx, tz]) => Math.hypot(tx - x, tz - z) < 2.8) &&
+    !lampPositions.some(([lx, lz]) => Math.hypot(lx - x, lz - z) < 2.6)
+
+  for (const z of streetZs) {
+    for (const side of [-1, 1]) {
+      const bz = z + side * benchOff
+      for (let x = -cityHalfX + cell * 2; x <= cityHalfX - cell; x += cell * 1.6) {
+        if (Math.hypot(x, bz) < plazaRadius + 6) continue
+        if (avenueXs.some((ax) => Math.abs(x - ax) < roadW * 0.5 + 5)) continue
+        if (!clear(x, bz)) continue
+        spots.push([x, bz, side > 0 ? Math.PI : 0])
+      }
+    }
+  }
+  for (const ax of avenueXs) {
+    for (const side of [-1, 1]) {
+      const bx = ax + side * benchOff
+      for (let z = -cityHalfZ + cell * 1.75; z <= cityHalfZ - cell; z += cell * 1.5) {
+        if (streetZs.some((sz) => Math.abs(z - sz) < roadW * 0.5 + 5)) continue
+        if (!clear(bx, z)) continue
+        spots.push([bx, z, side > 0 ? -Math.PI / 2 : Math.PI / 2])
+      }
+    }
+  }
+  if (!spots.length) return 0
+
+  // Local +z is the seat front; yaw turns it toward the road.
+  const woodGeo = mergeGeometries([
+    new THREE.BoxGeometry(3.6, 0.18, 1.1).translate(0, 1.0, 0.05),
+    new THREE.BoxGeometry(3.6, 0.8, 0.16).rotateX(-0.14).translate(0, 1.6, -0.5),
+  ])
+  const frameGeo = mergeGeometries([
+    new THREE.BoxGeometry(0.18, 1.0, 1.0).translate(-1.5, 0.5, 0),
+    new THREE.BoxGeometry(0.18, 1.0, 1.0).translate(1.5, 0.5, 0),
+  ])
+  const woodMesh = new THREE.InstancedMesh(
+    woodGeo,
+    new THREE.MeshStandardMaterial({ color: 0x4a2e1a, roughness: 0.88 }),
+    spots.length,
+  )
+  const frameMesh = new THREE.InstancedMesh(
+    frameGeo,
+    new THREE.MeshStandardMaterial({ color: 0x1c1f28, roughness: 0.6, metalness: 0.4 }),
+    spots.length,
+  )
+  const dummy = new THREE.Object3D()
+  spots.forEach(([x, z, yaw], i) => {
+    dummy.position.set(x, 0, z)
+    dummy.rotation.set(0, yaw, 0)
+    dummy.updateMatrix()
+    woodMesh.setMatrixAt(i, dummy.matrix)
+    frameMesh.setMatrixAt(i, dummy.matrix)
+  })
+  woodMesh.instanceMatrix.needsUpdate = true
+  frameMesh.instanceMatrix.needsUpdate = true
+  root.add(woodMesh, frameMesh)
+  return spots.length
+}
+
+function buildFallbackObelisk(height) {
+  const group = new THREE.Group()
+  const mat = new THREE.MeshStandardMaterial({ color: 0x9a9aa6, roughness: 0.8 })
+  const base = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.8, 2.6), mat)
+  base.position.y = 0.4
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 1.0, height * 0.8, 4), mat)
+  shaft.position.y = 0.8 + height * 0.4
+  shaft.rotation.y = Math.PI / 4
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.78, height * 0.12, 4), mat)
+  tip.position.y = 0.8 + height * 0.8 + height * 0.06
+  tip.rotation.y = Math.PI / 4
+  group.add(base, shaft, tip)
+  return group
+}
+
+/** Kenney obelisks in front of the Growth Tower, columns behind — inside the plaza fence. */
+function addPlazaStatues(root, surfaceY) {
+  const statues = getKenneyAssets()?.statues || []
+  const [obelisk, column] = statues
+  const r = PLAZA_RADIUS * 0.55
+  const placements = [
+    { template: obelisk, height: 10, x: -r * 0.7071, z: r * 0.7071 },
+    { template: obelisk, height: 10, x: r * 0.7071, z: r * 0.7071 },
+    { template: column || obelisk, height: 7.5, x: -r * 0.7071, z: -r * 0.7071 },
+    { template: column || obelisk, height: 7.5, x: r * 0.7071, z: -r * 0.7071 },
+  ]
+  for (const { template, height, x, z } of placements) {
+    let statue
+    if (template) {
+      statue = template.clone(true)
+      statue.scale.multiplyScalar(height)
+      statue.rotation.y = Math.atan2(x, z)
+    } else {
+      statue = buildFallbackObelisk(height)
+    }
+    placeOnSurface(statue, x, z, surfaceY)
+    root.add(statue)
   }
 }
 
@@ -1316,6 +1457,7 @@ export function buildEduCity(scene, opts) {
   })
   growthLabel.position.set(0, stats.height + 8, 0)
   root.add(growthLabel)
+  addPlazaStatues(root, plaza.position.y + 0.2)
 
   const titleZ = cityHalfZ + 18
   const gate = buildTitleGate(accent, cityLabel.toUpperCase())

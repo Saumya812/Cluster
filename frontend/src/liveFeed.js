@@ -70,11 +70,7 @@ export function createLiveFeed(buildingIndex, onPush) {
 
   function triggerFlash(fullName) {
     const target = buildingIndex.get(fullName)
-    if (!target) {
-      console.log(`no matching building found for: ${fullName}`)
-      return // repo not in this city (shouldn't normally happen)
-    }
-    console.log(`flashing building: ${fullName}`)
+    if (!target) return // repo not in this city (shouldn't normally happen)
     activeFlashes.set(fullName, { ...target, startTime: performance.now() })
   }
 
@@ -96,12 +92,7 @@ export function createLiveFeed(buildingIndex, onPush) {
       }
     })
 
-    ws.addEventListener('open', () => {
-      console.log('WebSocket connected:', WS_URL)
-    })
-
     ws.addEventListener('close', () => {
-      console.log(`liveFeed: disconnected, retrying in ${RECONNECT_DELAY_MS / 1000}s`)
       setTimeout(connect, RECONNECT_DELAY_MS)
     })
 

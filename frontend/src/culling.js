@@ -30,11 +30,6 @@ export function setupDistanceCulling(scene, camera, fogDensity) {
     if (obj.boundingSphere) entries.push(obj)
   })
 
-  console.log(
-    `Distance culling: watching ${entries.length} static instanced batches, cutoff ~` +
-      `${cullDistance.toFixed(0)} units (fog density ${fogDensity}).`,
-  )
-
   let frame = 0
   return {
     // Called once per animation frame; the actual visibility check is

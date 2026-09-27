@@ -485,7 +485,7 @@ function addStreetLife(root, {
   syncCars()
   root.add(chassisMesh, cabinMesh, wheelMesh)
 
-  const benchCount = addBenches(root, {
+  addBenches(root, {
     streetZs,
     avenueXs,
     cityHalfX,
@@ -496,10 +496,6 @@ function addStreetLife(root, {
     treePositions,
     lampPositions,
   })
-
-  console.log(
-    `[edu city] street life: ${treePositions.length} trees · ${lampPositions.length} lamps · ${benchCount} benches · ${CAR_COUNT} cars`,
-  )
 
   return {
     update(delta) {
@@ -1752,12 +1748,6 @@ export function buildEduCity(scene, opts) {
     fillers: fillers.map((f) => ({ x: f.x, z: f.z })),
     amusementPark: park?.mapMarker || null,
   }
-
-  console.log(
-    `[edu city:${cityId}] ${topicMarkers.length} topics · ${fillers.length} fillers · streets=${streetNames.length}${
-      park ? ` · park @ (${park.center.x.toFixed(0)}, ${park.center.z.toFixed(0)})` : ''
-    }`,
-  )
 
   return {
     root,

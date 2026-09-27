@@ -159,7 +159,6 @@ function bakeMergedParts(root, def) {
     parts.push({ geometry: merged, material: bucket.material, name: bucket.name })
   }
 
-  console.log(`[island:${def.key}] baked ${parts.length} merged mesh part(s) for instancing`)
   return parts
 }
 

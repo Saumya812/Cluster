@@ -2472,13 +2472,6 @@ export function buildCityscape(scene, repos, parks = [], streets = { avenueZs: [
   buildBackgroundSkyline(scene, (minX + maxX) / 2, (minZ + maxZ) / 2, Math.max(maxX - minX, maxZ - minZ) / 2)
   buildStars(scene, (minX + maxX) / 2, (minZ + maxZ) / 2)
 
-  console.log(
-    `Cityscape: ${allTrees.length} trees, ${avenueLamps.length + localLamps.length + riverLamps.length} streetlights, ` +
-      `${planterPositions.length} planters, ${bollardPositions.length} bollards, ${cafeCap.length} street cafes, ` +
-      `${localLanes.length} local lanes, ${CAR_COUNT} cars, ` +
-      `${elevatedLanes.length} elevated lanes, ${parks.length} parks, ${STAR_COUNT} stars.`,
-  )
-
   let lastTime = null
 
   return {

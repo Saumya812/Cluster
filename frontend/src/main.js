@@ -510,34 +510,6 @@ function patchMaterialForInstancing(material) {
   }
 }
 
-// Sanity check requested: read each batch's actual per-instance Y-scale
-// back out of its GPU-bound instanceMatrix buffer (not just the source
-// repo data) to confirm every building really did get its own height, not
-// a shared or default value.
-function logInstanceHeightRange(buildingBatches, totalCount) {
-  const matrix = new THREE.Matrix4()
-  const position = new THREE.Vector3()
-  const quaternion = new THREE.Quaternion()
-  const scale = new THREE.Vector3()
-
-  let min = Infinity
-  let max = -Infinity
-
-  for (const batch of buildingBatches) {
-    for (let i = 0; i < batch.count; i++) {
-      batch.getMatrixAt(i, matrix)
-      matrix.decompose(position, quaternion, scale)
-      min = Math.min(min, scale.y)
-      max = Math.max(max, scale.y)
-    }
-  }
-
-  console.log(
-    `Instance height sanity check -- min Y-scale: ${min.toFixed(3)}, max Y-scale: ${max.toFixed(3)} ` +
-      `(read directly from instanceMatrix across ${buildingBatches.length} batches, ${totalCount} instances)`,
-  )
-}
-
 // Deterministic per-building PRNG (same mulberry32 approach as the window
 // textures) so footprint jitter and rooftop-style choice are reproducible
 // across reloads instead of reshuffling every render.
@@ -1023,15 +995,6 @@ async function loadCity() {
 
   setLoadingProgress(0.9, 'Placing streets, trees & parks…')
   placeCameraAtStreetLevel(repos)
-  logInstanceHeightRange(buildingBatches, repos.length)
-
-  console.log(
-    `Rendered ${repos.length} buildings (${boxSpecs.length} box, ${cylinderSpecs.length} cylinder) across ` +
-      `${districts.size} districts in ${buildingBatches.length} batches (~${batchSize}/batch, each with its ` +
-      `own window texture). ${spireSpecs.length} spires, ${capSpecsBox.length + capSpecsCylinder.length} recessed caps, ` +
-      `${setbackSpecs.length} Art Deco setbacks.`,
-  )
-
   liveFeed = createLiveFeed(buildingIndex, hud.recordPush)
   cityscape = buildCityscape(scene, repos, parks, streets)
   buildGroundPlanes(cityscape.groundGapMinZ, cityscape.groundGapMaxZ)

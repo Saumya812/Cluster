@@ -480,10 +480,6 @@ export function buildMlCity(scene, { progress = [] } = {}) {
     fillers: fillers.map((f) => ({ x: f.x, z: f.z })),
   }
 
-  console.log(
-    `[ml city] organized: ${fillers.length} block buildings + ${topicMarkers.length} topic towers`,
-  )
-
   return {
     root,
     clickables,

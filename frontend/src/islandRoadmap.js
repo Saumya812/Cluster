@@ -832,9 +832,6 @@ export function createIslandRoadmap(scene, opts) {
   if (useInstances) {
     for (const batch of batches.values()) {
       batch.instanced = createInstancedIslandBodies(root, batch.model, batch.levels.length)
-      console.log(
-        `[roadmap] instanced ${batch.model.key}: ${batch.levels.length} island(s) × ${batch.instanced.partCount} draw call(s) @ scale ${batch.scale.toFixed(3)}`,
-      )
       // Instanced GLB bodies are the thing you see — make them clickable by instanceId.
       for (const mesh of batch.instanced.meshes) {
         mesh.userData.kind = 'islandInstances'
@@ -842,8 +839,6 @@ export function createIslandRoadmap(scene, opts) {
         clickables.push(mesh)
       }
     }
-  } else if (forceCloneIslands && batches.size) {
-    console.log(`[roadmap] clone baseline: ${levels.length} full GLB clones`)
   }
 
   const fireflyMaterial = createFireflyMaterial()

@@ -265,11 +265,6 @@ export function buildNycWorld(scene, nycData) {
       kind: 'nyc',
     }))
 
-  console.log(
-    `NYC mode: ${buildings.length} buildings, ${streets.length} streets ` +
-      `(${nycData.meta?.place || 'New York'})`,
-  )
-
   return {
     bounds,
     buildings,

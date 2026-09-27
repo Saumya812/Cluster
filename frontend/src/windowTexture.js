@@ -49,6 +49,9 @@ export function createWindowTextures({
   minLitRatio = 0.2,
   maxLitRatio = 0.34,
   seed = null,
+  // Themed level cities pass a neutral wall so material.color sets the hue.
+  wallColor = '#3a4258',
+  paneColor = '#2a3144',
 } = {}) {
   const random = seed === null ? Math.random : mulberry32(seed)
 
@@ -66,7 +69,7 @@ export function createWindowTextures({
   const emissiveCtx = emissiveCanvas.getContext('2d')
 
   // Wall / mortar -- cool slate so warm window panes punch like neon glass.
-  colorCtx.fillStyle = '#3a4258'
+  colorCtx.fillStyle = wallColor
   colorCtx.fillRect(0, 0, size, size)
   emissiveCtx.fillStyle = '#000000'
   emissiveCtx.fillRect(0, 0, size, size)
@@ -121,7 +124,7 @@ export function createWindowTextures({
         emissiveCtx.fillStyle = `rgb(${Math.min(255, r + 20)}, ${Math.min(255, g + 10)}, ${b})`
         emissiveCtx.fillRect(x, y, paneSize, paneSize)
       } else {
-        colorCtx.fillStyle = '#2a3144'
+        colorCtx.fillStyle = paneColor
         colorCtx.fillRect(x, y, paneSize, paneSize)
       }
     }

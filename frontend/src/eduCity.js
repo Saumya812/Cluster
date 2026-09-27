@@ -5,6 +5,13 @@ import * as THREE from 'three'
 import { createWindowTextures, hashStringToSeed } from './windowTexture.js'
 import { buildAmusementPark } from './amusementPark.js'
 import { buildSunsetSky } from './islandRoadmap.js'
+import {
+  buildThemedSky,
+  createGearDecorations,
+  createThemeParticles,
+  getLevelTheme,
+  makeStreetTexture,
+} from './levelThemes.js'
 
 const BASE_GROWTH_H = 14
 const PLAZA_RADIUS = 28
@@ -181,6 +188,7 @@ function addStreetLife(root, {
   rng,
   roadW,
   cell,
+  lampColor = 0xffd08a,
 }) {
   const treePositions = []
   const lampPositions = []
@@ -340,7 +348,7 @@ function addStreetLife(root, {
   const armGeo = new THREE.BoxGeometry(2.4, 0.14, 0.14)
   const bulbGeo = new THREE.SphereGeometry(0.48, 8, 8)
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x1c1f28, roughness: 0.7, metalness: 0.4 })
-  const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffd08a })
+  const bulbMat = new THREE.MeshBasicMaterial({ color: lampColor })
   const poleMesh = new THREE.InstancedMesh(poleGeo, poleMat, Math.max(lampPositions.length, 1))
   const armMesh = new THREE.InstancedMesh(armGeo, poleMat, Math.max(lampPositions.length, 1))
   const bulbMesh = new THREE.InstancedMesh(bulbGeo, bulbMat, Math.max(lampPositions.length, 1))
@@ -690,13 +698,13 @@ function buildTitleGate(accent, title) {
 }
 
 /** Floating rocky platform + waterfall skirts. Returns { waterMats, bounds }. */
-function addFloatingPlatform(root, halfX, halfZ) {
+function addFloatingPlatform(root, halfX, halfZ, theme = null) {
   const padX = halfX + 28
   const padZ = halfZ + 28
   const thick = 8
 
   const rockMat = new THREE.MeshStandardMaterial({
-    color: 0x5a5048,
+    color: theme?.rockColor ?? 0x5a5048,
     roughness: 0.92,
     flatShading: true,
   })
@@ -743,9 +751,9 @@ function addFloatingPlatform(root, halfX, halfZ) {
   waterTex.repeat.set(4, 6)
   const waterMat = new THREE.MeshStandardMaterial({
     map: waterTex,
-    color: 0xa0d8f0,
-    emissive: 0x3a80a0,
-    emissiveIntensity: 0.35,
+    color: theme?.water.color ?? 0xa0d8f0,
+    emissive: theme?.water.emissive ?? 0x3a80a0,
+    emissiveIntensity: theme?.water.intensity ?? 0.35,
     transparent: true,
     opacity: 0.85,
     side: THREE.DoubleSide,
@@ -897,6 +905,7 @@ export function buildEduCity(scene, opts) {
     accent = '#3de7ff',
     progress = [],
     includePark = true,
+    levelId = null,
   } = opts
 
   const root = new THREE.Group()
@@ -907,6 +916,44 @@ export function buildEduCity(scene, opts) {
   const clickables = []
   const progressById = new Map(progress.map((p) => [p.building_id, p]))
   const rng = mulberry32(hashStringToSeed(`edu-city-${cityId}-v5-spacious`))
+
+  // Visual theme only. It draws from its own RNG so `rng` — which decides
+  // building heights and lots — produces the exact same layout in every theme.
+  const theme = levelId ? getLevelTheme(levelId) : null
+  const themeRng = mulberry32(hashStringToSeed(`edu-theme-${cityId}-${levelId}`))
+  const streetTex = theme ? makeStreetTexture(theme.street) : null
+  const glowMats = []
+
+  function roadMaterial(fallbackColor, w, h) {
+    if (!theme) return new THREE.MeshStandardMaterial({ color: fallbackColor, roughness: 0.95 })
+    const map = streetTex.clone()
+    map.repeat.set(w / 24, h / 24)
+    map.needsUpdate = true
+    return new THREE.MeshStandardMaterial({
+      map,
+      roughness: theme.street.roughness ?? 0.95,
+      metalness: theme.street.metalness ?? 0,
+      emissive: theme.street.emissive ?? 0x000000,
+      emissiveIntensity: theme.street.emissive ? 0.6 : 0,
+    })
+  }
+
+  function themedBuildingMaterial(glowIndex, extra) {
+    const glow = theme.windowGlow[glowIndex % theme.windowGlow.length]
+    const mat = new THREE.MeshStandardMaterial({
+      ...extra,
+      emissive: new THREE.Color(glow),
+      emissiveIntensity: theme.glowIntensity,
+      transparent: Boolean(theme.buildingOpacity),
+      opacity: theme.buildingOpacity ?? 1,
+      depthWrite: !theme.buildingOpacity,
+    })
+    glowMats.push({ mat, offset: glowIndex / theme.windowGlow.length })
+    return mat
+  }
+
+  const themeBuildingColor = () =>
+    new THREE.Color(theme.buildingColors[Math.floor(themeRng() * theme.buildingColors.length)])
 
   const streetCount = Math.max(streetNames.length, 1)
   const streetSpacing = CELL * 4.0
@@ -922,8 +969,8 @@ export function buildEduCity(scene, opts) {
   let flightBounds = null
   if (!includePark) {
     // Floating city: no solid ground — only platform, waterfalls, and sky below
-    root.add(buildSunsetSky())
-    waterfallFx = addFloatingPlatform(root, cityHalfX + 10, cityHalfZ + 10)
+    root.add(theme ? buildThemedSky(theme) : buildSunsetSky())
+    waterfallFx = addFloatingPlatform(root, cityHalfX + 10, cityHalfZ + 10, theme)
     flightBounds = waterfallFx.bounds
   } else {
     const ground = new THREE.Mesh(
@@ -963,6 +1010,7 @@ export function buildEduCity(scene, opts) {
     seed: hashStringToSeed(`edu-windows-${cityId}`),
     minLitRatio: 0.26,
     maxLitRatio: 0.46,
+    ...(theme && { wallColor: '#9aa0ae', paneColor: '#666c7c' }),
   })
 
   const streetCenters = []
@@ -984,7 +1032,7 @@ export function buildEduCity(scene, opts) {
   for (const x of avenueXs) {
     const ave = new THREE.Mesh(
       new THREE.PlaneGeometry(ROAD_W, span - 20),
-      new THREE.MeshStandardMaterial({ color: 0x14161f, roughness: 0.95 }),
+      roadMaterial(0x14161f, ROAD_W, span - 20),
     )
     ave.rotation.x = -Math.PI / 2
     ave.position.set(x, 0.015, 0)
@@ -1012,7 +1060,7 @@ export function buildEduCity(scene, opts) {
 
     const road = new THREE.Mesh(
       new THREE.PlaneGeometry(span - 20, ROAD_W),
-      new THREE.MeshStandardMaterial({ color: 0x101218, roughness: 0.95 }),
+      roadMaterial(0x101218, span - 20, ROAD_W),
     )
     road.rotation.x = -Math.PI / 2
     road.position.set(0, 0.02, z)
@@ -1020,7 +1068,7 @@ export function buildEduCity(scene, opts) {
 
     const lane = new THREE.Mesh(
       new THREE.PlaneGeometry(span - 40, 0.35),
-      new THREE.MeshBasicMaterial({ color: 0x7a849e }),
+      new THREE.MeshBasicMaterial({ color: theme?.street.lane ?? 0x7a849e }),
     )
     lane.rotation.x = -Math.PI / 2
     lane.position.set(0, 0.05, z)
@@ -1059,15 +1107,23 @@ export function buildEduCity(scene, opts) {
       const height = landmarkTopics
         ? MAX_H + 10 + rng() * 12
         : 12 + subCount * 7 + rng() * 8
-      const mat = new THREE.MeshStandardMaterial({
-        map: colorTexture,
-        emissiveMap: emissiveTexture,
-        emissive: new THREE.Color(0xffffff),
-        emissiveIntensity: 1.5,
-        color: color.clone().multiplyScalar(0.9),
-        roughness: 0.65,
-        metalness: 0.22,
-      })
+      const mat = theme
+        ? themedBuildingMaterial(topics.indexOf(topic), {
+            map: colorTexture,
+            emissiveMap: emissiveTexture,
+            color: themeBuildingColor(),
+            roughness: 0.65,
+            metalness: 0.22,
+          })
+        : new THREE.MeshStandardMaterial({
+            map: colorTexture,
+            emissiveMap: emissiveTexture,
+            emissive: new THREE.Color(0xffffff),
+            emissiveIntensity: 1.5,
+            color: color.clone().multiplyScalar(0.9),
+            roughness: 0.65,
+            metalness: 0.22,
+          })
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat)
       mesh.position.set(px, height / 2, topicRowZ)
       mesh.scale.set(topicFootprint, height, topicFootprint)
@@ -1082,7 +1138,7 @@ export function buildEduCity(scene, opts) {
       root.add(mesh)
       clickables.push(mesh)
       occupied.add(lotKey(px, topicRowZ))
-      topicSpots.push({ x: px, z: topicRowZ })
+      topicSpots.push({ x: px, z: topicRowZ, height, streetZ: z })
 
       const topicNumber = topics.indexOf(topic) + 1
       const nameSprite = landmarkTopics
@@ -1168,11 +1224,14 @@ export function buildEduCity(scene, opts) {
           // Skip every ~5th lot so trees can sit between buildings
           if (Math.abs(i) % 5 === 2) continue
           const height = MIN_H + rng() * (MAX_H - MIN_H)
+          const defaultTint = color.clone().multiplyScalar(0.45 + rng() * 0.4)
           fillers.push({
             x,
             z: rowZ,
             height,
-            tint: color.clone().multiplyScalar(0.45 + rng() * 0.4),
+            streetZ: z,
+            tint: theme ? themeBuildingColor().multiplyScalar(0.8 + themeRng() * 0.35) : defaultTint,
+            glow: theme ? Math.floor(themeRng() * theme.windowGlow.length) : 0,
           })
           occupied.add(lotKey(x, rowZ))
         }
@@ -1181,17 +1240,19 @@ export function buildEduCity(scene, opts) {
   }
 
   const dummy = new THREE.Object3D()
-  if (fillers.length) {
-    const mat = new THREE.MeshStandardMaterial({
-      map: colorTexture,
-      emissiveMap: emissiveTexture,
-      emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: 1.25,
-      roughness: 0.75,
-      metalness: 0.15,
-    })
-    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, fillers.length)
-    fillers.forEach((f, i) => {
+  // Emissive can't vary per instance, so themed fillers get one batch per glow colour.
+  const fillerBatches = theme
+    ? theme.windowGlow.map((_, gi) => fillers.filter((f) => f.glow === gi))
+    : [fillers]
+  const fillerGeo = new THREE.BoxGeometry(1, 1, 1)
+  fillerBatches.forEach((batch, gi) => {
+    if (!batch.length) return
+    const base = { map: colorTexture, emissiveMap: emissiveTexture, roughness: 0.75, metalness: 0.15 }
+    const mat = theme
+      ? themedBuildingMaterial(gi, base)
+      : new THREE.MeshStandardMaterial({ ...base, emissive: new THREE.Color(0xffffff), emissiveIntensity: 1.25 })
+    const mesh = new THREE.InstancedMesh(fillerGeo, mat, batch.length)
+    batch.forEach((f, i) => {
       dummy.position.set(f.x, f.height / 2, f.z)
       dummy.scale.set(FOOTPRINT * 0.92, f.height, FOOTPRINT * 0.92)
       dummy.updateMatrix()
@@ -1201,6 +1262,45 @@ export function buildEduCity(scene, opts) {
     mesh.instanceMatrix.needsUpdate = true
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
     root.add(mesh)
+  })
+
+  let gears = null
+  if (theme?.gears) {
+    const placements = []
+    const faceOffset = (FOOTPRINT * 0.92) / 2 + 0.35
+    for (const f of fillers) {
+      if (themeRng() > 0.35) continue
+      const streetDir = Math.sign(f.streetZ - f.z) || 1
+      const face = Math.floor(themeRng() * 3)
+      const sideDir = face === 1 ? 1 : -1
+      placements.push({
+        x: face === 0 ? f.x : f.x + sideDir * faceOffset,
+        y: f.height * (0.6 + themeRng() * 0.2),
+        z: face === 0 ? f.z + streetDir * faceOffset : f.z,
+        yaw: face === 0 ? 0 : Math.PI / 2,
+        radius: 2.0 + themeRng() * 0.8,
+        speed: (themeRng() < 0.5 ? -1 : 1) * (0.4 + themeRng() * 0.6),
+      })
+    }
+    const topicFace = topicFootprint / 2 + 0.4
+    for (const spot of topicSpots) {
+      const dir = Math.sign(spot.streetZ - spot.z) || 1
+      const zFace = spot.z + dir * topicFace
+      placements.push(
+        { x: spot.x - 2.2, y: spot.height * 0.8, z: zFace, yaw: 0, radius: 2.8, speed: 0.5 },
+        { x: spot.x + 2.2, y: spot.height * 0.7, z: zFace, yaw: 0, radius: 1.8, speed: -0.8 },
+      )
+      for (const side of [-1, 1]) {
+        placements.push(
+          { x: spot.x + side * topicFace, y: spot.height * 0.78, z: spot.z - 2.2, yaw: Math.PI / 2, radius: 2.8, speed: 0.5 * side },
+          { x: spot.x + side * topicFace, y: spot.height * 0.68, z: spot.z + 2.4, yaw: Math.PI / 2, radius: 1.8, speed: -0.8 * side },
+        )
+      }
+    }
+    if (placements.length) {
+      gears = createGearDecorations(placements)
+      root.add(gears.mesh)
+    }
   }
 
   const stats = growthStatsFromProgress(progress, topics.length, buildingsById)
@@ -1225,7 +1325,7 @@ export function buildEduCity(scene, opts) {
   // Entry boulevard + landscaping visible from the title spawn
   const entryRoad = new THREE.Mesh(
     new THREE.PlaneGeometry(ROAD_W * 1.15, 70),
-    new THREE.MeshStandardMaterial({ color: 0x14161f, roughness: 0.95 }),
+    roadMaterial(0x14161f, ROAD_W * 1.15, 70),
   )
   entryRoad.rotation.x = -Math.PI / 2
   entryRoad.position.set(0, 0.02, titleZ - 28)
@@ -1254,7 +1354,7 @@ export function buildEduCity(scene, opts) {
       root.add(pole)
       const bulb = new THREE.Mesh(
         new THREE.SphereGeometry(0.55, 8, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffd08a }),
+        new THREE.MeshBasicMaterial({ color: theme?.lampColor ?? 0xffd08a }),
       )
       bulb.position.set(tx + side * 1.2, 8.6, tz + 3)
       root.add(bulb)
@@ -1271,7 +1371,15 @@ export function buildEduCity(scene, opts) {
     rng,
     roadW: ROAD_W,
     cell: CELL,
+    lampColor: theme?.lampColor,
   })
+
+  let particles = null
+  if (theme?.particles) {
+    const b = flightBounds || { minX: -cityHalfX, maxX: cityHalfX, minZ: -cityHalfZ, maxZ: cityHalfZ }
+    particles = createThemeParticles(theme, { minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, top: 120 })
+    if (particles) root.add(particles.points)
+  }
 
   // Start outside the city looking at the title gate — not at the Growth Tower.
   const spawnPose = {
@@ -1391,6 +1499,7 @@ export function buildEduCity(scene, opts) {
     amusementPark: park,
     flightBounds,
     spawnPose,
+    theme,
     applyProgress(list) {
       progressById.clear()
       for (const row of list) progressById.set(row.building_id, row)
@@ -1409,6 +1518,13 @@ export function buildEduCity(scene, opts) {
           if (mat.map) {
             mat.map.offset.y = (mat.map.offset.y + delta * 0.55) % 1
           }
+        }
+      }
+      particles?.update(delta, time)
+      gears?.update(time)
+      if (theme?.shimmer) {
+        for (const { mat, offset } of glowMats) {
+          mat.emissive.setHSL((time * 0.06 + offset) % 1, 0.85, 0.62)
         }
       }
     },

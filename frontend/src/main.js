@@ -607,6 +607,54 @@ function applySunsetAtmosphere() {
   setCityLightsVisible(true)
 }
 
+const DEFAULT_LIGHTS = {
+  ambient: { color: ambientLight.color.clone(), intensity: ambientLight.intensity },
+  hemiSky: hemiLight.color.clone(),
+  hemiGround: hemiLight.groundColor.clone(),
+  hemiIntensity: hemiLight.intensity,
+  sun: { color: directionalLight.color.clone(), intensity: directionalLight.intensity },
+  bounce: { color: neonBounce.color.clone(), intensity: neonBounce.intensity },
+}
+let levelThemeApplied = false
+
+/** Per-level city look: fog + background + light colours from levelThemes.js. */
+function applyLevelTheme(theme) {
+  if (!theme) {
+    applySunsetAtmosphere()
+    return
+  }
+  scene.background = new THREE.Color(theme.fogColor)
+  scene.fog = new THREE.FogExp2(theme.fogColor, theme.fogDensity)
+  camera.far = 6000
+  camera.updateProjectionMatrix()
+  ambientLight.color.set(theme.ambient.color)
+  ambientLight.intensity = theme.ambient.intensity
+  hemiLight.color.set(theme.hemi.sky)
+  hemiLight.groundColor.set(theme.hemi.ground)
+  hemiLight.intensity = theme.hemi.intensity
+  directionalLight.color.set(theme.sun.color)
+  directionalLight.intensity = theme.sun.intensity
+  neonBounce.color.set(theme.bounce)
+  neonBounce.intensity = DEFAULT_LIGHTS.bounce.intensity * 1.4
+  setCityLightsVisible(true)
+  levelThemeApplied = true
+}
+
+function resetLevelTheme() {
+  if (!levelThemeApplied) return
+  levelThemeApplied = false
+  ambientLight.color.copy(DEFAULT_LIGHTS.ambient.color)
+  ambientLight.intensity = DEFAULT_LIGHTS.ambient.intensity
+  hemiLight.color.copy(DEFAULT_LIGHTS.hemiSky)
+  hemiLight.groundColor.copy(DEFAULT_LIGHTS.hemiGround)
+  hemiLight.intensity = DEFAULT_LIGHTS.hemiIntensity
+  directionalLight.color.copy(DEFAULT_LIGHTS.sun.color)
+  directionalLight.intensity = DEFAULT_LIGHTS.sun.intensity
+  neonBounce.color.copy(DEFAULT_LIGHTS.bounce.color)
+  neonBounce.intensity = DEFAULT_LIGHTS.bounce.intensity
+  applySunsetAtmosphere()
+}
+
 async function fetchRoadmapPrefs(cityId) {
   try {
     const response = await fetch('/api/roadmap/prefs?city=' + encodeURIComponent(cityId))
@@ -1181,6 +1229,22 @@ window.__clusterRoadmapDebug = () => {
   }
 }
 
+if (import.meta.env.DEV) {
+  // Preview any level's city theme, even locked ones. Restores last_level_id afterwards.
+  window.__clusterPreviewLevel = async (n) => {
+    const entry = islandRoadmap?.islandEntries?.find((e) => e.level.level === n)
+    if (!entry) return 'open a subject roadmap first'
+    const { last_level_id } = await fetchRoadmapPrefs(activeCityId)
+    appMode = 'ml'
+    document.body.dataset.appMode = 'ml'
+    setBloomForMode('ml')
+    await loadLevelCity(activeCityId, entry.level)
+    await new Promise((r) => setTimeout(r, 1000))
+    await saveRoadmapPrefs(activeCityId, { last_level_id })
+    return mlCity?.theme?.name
+  }
+}
+
 window.__clusterCityDebug = () => {
   if (!mlCity) return null
   const dir = new THREE.Vector3()
@@ -1436,6 +1500,7 @@ function disposeMlCity() {
   if (mlCity?.root) scene.remove(mlCity.root)
   mlCity?.dispose?.()
   mlCity = null
+  resetLevelTheme()
 }
 
 async function loadIslandRoadmap(cityId) {
@@ -1561,6 +1626,7 @@ async function loadLevelCity(cityId, level) {
     accent: DISTRICT_ACCENTS[cityId] || '#3de7ff',
     progress,
     includePark: false,
+    levelId: level.id,
   })
   activeCityId = cityId
   activeLevel = level
@@ -1601,7 +1667,7 @@ async function loadLevelCity(cityId, level) {
       '%'
   }
 
-  applySunsetAtmosphere()
+  applyLevelTheme(mlCity.theme)
   const spawn = mlCity.spawnPose
   planeRig?.show()
   planeRig?.placeAt(
@@ -1801,6 +1867,7 @@ function showDistrictPicker() {
 
 function enterCityRoadmap(cityId) {
   districtPicker.hide()
+  subjectGlobe?.hide()
   appMode = 'roadmap'
   document.body.dataset.appMode = 'roadmap'
   nearPrompt.hidden = true
@@ -2085,7 +2152,10 @@ window.__clusterFps = () => fpsValue
 
 function animate() {
   requestAnimationFrame(animate)
+  renderFrame()
+}
 
+function renderFrame() {
   const time = performance.now()
   const delta = Math.min((time - prevTime) / 1000, 0.1)
   prevTime = time
@@ -2132,6 +2202,13 @@ function animate() {
     mlCity?.update?.(time / 1000, delta)
   }
   composer.render()
+}
+
+if (import.meta.env.DEV) {
+  // Hidden webviews pause requestAnimationFrame; lets automation render frames anyway.
+  window.__clusterRenderFrames = (n = 1) => {
+    for (let i = 0; i < n; i++) renderFrame()
+  }
 }
 
 animate()
